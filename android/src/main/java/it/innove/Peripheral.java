@@ -49,14 +49,15 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Peripheral wraps the BluetoothDevice and provides methods to convert to JSON.
  */
 @SuppressLint("MissingPermission")
-public class Peripheral extends BluetoothGattCallback {
+public class Peripheral {
 
     private static final String CHARACTERISTIC_NOTIFICATION_CONFIG = "00002902-0000-1000-8000-00805f9b34fb";
     public static final int GATT_INSUFFICIENT_AUTHENTICATION = 5;
     public static final int GATT_AUTH_FAIL = 137;
 
     protected final BluetoothDevice device;
-    private final Map<String, NotifyBufferContainer> bufferedCharacteristics;
+    protected final Map<String, NotifyBufferContainer> bufferedCharacteristics;
+;
     protected volatile byte[] advertisingDataBytes = new byte[0];
     protected volatile int advertisingRSSI;
     private volatile boolean connected = false;
@@ -80,6 +81,315 @@ public class Peripheral extends BluetoothGattCallback {
     private boolean commandQueueBusy = false;
 
     private List<byte[]> writeQueue = new ArrayList<>();
+
+    private final BluetoothGattCallback bluetoothGattCallback = new BluetoothGattCallback() {
+        @Override
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            super.onServicesDiscovered(gatt, status);
+            mainHandler.post(() -> {
+                if (gatt == null) {
+                    for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
+                        retrieveServicesCallback.invoke("Error during service retrieval: gatt is null");
+                    }
+                }
+                else if (status == BluetoothGatt.GATT_SUCCESS)
+                {
+                    for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
+                        WritableMap map = Peripheral.this.asWritableMap(gatt);
+                        retrieveServicesCallback.invoke(null, map);
+                    }
+                }
+                else {
+                    for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
+                        retrieveServicesCallback.invoke("Error during service retrieval.");
+                    }
+                }
+                retrieveServicesCallbacks.clear();
+                completedCommand();
+            });
+        }
+
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatta, int status, final int newState) {
+
+            Log.d(BleManager.LOG_TAG, "onConnectionStateChange to " + newState + " on peripheral: " + device.getAddress()
+                    + " with status " + status);
+
+            mainHandler.post(() -> {
+                gatt = gatta;
+
+                if (gatt != null && status != BluetoothGatt.GATT_SUCCESS) {
+                    gatt.close();
+                }
+
+                connecting = false;
+                if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                    connected = true;
+
+                    sendConnectionEvent(device, "BleManagerConnectPeripheral", status);
+
+                    Log.d(BleManager.LOG_TAG, "Connected to: " + device.getAddress());
+                    for (Callback connectCallback : connectCallbacks) {
+                        connectCallback.invoke();
+                    }
+                    connectCallbacks.clear();
+
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
+
+                    errorAndClearAllCallbacks("Device disconnected");
+                    resetQueuesAndBuffers();
+                    if (gatt != null) {
+                        gatt.disconnect();
+                        gatt.close();
+                    }
+
+                    gatt = null;
+                    sendConnectionEvent(device, "BleManagerDisconnectPeripheral", BluetoothGatt.GATT_SUCCESS);
+
+                }
+
+            });
+
+        }
+
+        //////
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                super.onCharacteristicChanged(gatt, characteristic);
+                this.onCharacteristicChanged(gatt, characteristic, characteristic.getValue());
+            }
+        }
+
+        @Override
+        public void onCharacteristicChanged(@NonNull final BluetoothGatt gatt, @NonNull final BluetoothGattCharacteristic characteristic, @NonNull final byte[] data) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                super.onCharacteristicChanged(gatt, characteristic, data);
+            }
+            try {
+                String charString = characteristic.getUuid().toString();
+                String service = characteristic.getService().getUuid().toString();
+                NotifyBufferContainer buffer = Peripheral.this.bufferedCharacteristics
+                        .get(Peripheral.this.bufferedCharacteristicsKey(service, charString));
+                byte[] dataValue = data;
+                // If for some reason the value's length >= 2*buffer size this will be able to
+                // handle it
+                while (dataValue != null) {
+                    byte[] rest = null;
+                    if (buffer != null) {
+                        rest = buffer.put(dataValue);
+                        if (buffer.isBufferFull()) {
+
+                            // fetch and reset
+                            dataValue = buffer.items.array();
+                            buffer.resetBuffer();
+                        } else {
+                            return;
+                        }
+                    }
+
+                    WritableMap map = Arguments.createMap();
+                    map.putString("peripheral", device.getAddress());
+                    map.putString("characteristic", charString);
+                    map.putString("service", service);
+                    map.putArray("value", BleManager.bytesToWritableArray(dataValue));
+                    sendEvent("BleManagerDidUpdateValueForCharacteristic", map);
+
+                    // Check if rest exists. If so it needs to be added to the clean buffer
+                    dataValue = rest;
+                }
+
+            } catch (Exception e) {
+                Log.d(BleManager.LOG_TAG, "onCharacteristicChanged ERROR: " + e);
+            }
+        }
+
+        @Override
+        public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                super.onCharacteristicRead(gatt, characteristic, status);
+                this.onCharacteristicRead(gatt, characteristic, characteristic.getValue(), status);
+            }
+        }
+
+        @Override
+        public void onCharacteristicRead(@NonNull final BluetoothGatt gatt,
+                                         @NonNull final BluetoothGattCharacteristic characteristic,
+                                         @NonNull byte[] data, int status) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                super.onCharacteristicRead(gatt, characteristic, data, status);
+            }
+            mainHandler.post(() -> {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
+                        Log.d(BleManager.LOG_TAG, "Read needs bonding");
+                    }
+
+                    for (Callback readCallback : readCallbacks) {
+                        readCallback.invoke(
+                                "Error reading " + characteristic.getUuid() + " status=" + status,
+                                null);
+                    }
+                    readCallbacks.clear();
+                } else if (!readCallbacks.isEmpty()) {
+                    final byte[] dataValue = copyOf(data);
+
+                    for (Callback readCallback : readCallbacks) {
+                        readCallback.invoke(null, BleManager.bytesToWritableArray(dataValue));
+                    }
+                    readCallbacks.clear();
+                }
+                completedCommand();
+            });
+
+        }
+
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            super.onCharacteristicWrite(gatt, characteristic, status);
+
+            mainHandler.post(() -> {
+                if (writeQueue.size() > 0) {
+                    byte[] data = writeQueue.get(0);
+                    writeQueue.remove(0);
+                    doWrite(characteristic, data, null);
+                } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                    if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
+                        Log.d(BleManager.LOG_TAG, "Write needs bonding");
+                        // *not* doing completedCommand()
+                        return;
+                    }
+                    for (Callback writeCallback : writeCallbacks) {
+                        writeCallback.invoke("Error writing " + characteristic.getUuid() + " status=" + status, null);
+                    }
+                    writeCallbacks.clear();
+                } else if (!writeCallbacks.isEmpty()) {
+                    for (Callback writeCallback : writeCallbacks) {
+                        writeCallback.invoke();
+                    }
+                    writeCallbacks.clear();
+                }
+                completedCommand();
+            });
+        }
+
+        @Override
+        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            mainHandler.post(() -> {
+                if (!registerNotifyCallbacks.isEmpty()) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        for (Callback registerNotifyCallback : registerNotifyCallbacks) {
+                            registerNotifyCallback.invoke();
+                        }
+                        Log.d(BleManager.LOG_TAG, "onDescriptorWrite success");
+                    } else {
+                        for (Callback registerNotifyCallback : registerNotifyCallbacks) {
+                            registerNotifyCallback.invoke("Error writing descriptor status=" + status, null);
+                        }
+                        Log.e(BleManager.LOG_TAG, "Error writing descriptor status=" + status);
+                    }
+
+                    registerNotifyCallbacks.clear();
+                } else if (!writeDescriptorCallbacks.isEmpty()) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        for (Callback callback : writeDescriptorCallbacks) {
+                            callback.invoke();
+                        }
+                        Log.d(BleManager.LOG_TAG, "onDescriptorWrite success");
+                    } else {
+                        for (Callback callback : writeDescriptorCallbacks) {
+                            callback.invoke("Error writing descriptor status=" + status, null);
+                        }
+                        Log.e(BleManager.LOG_TAG, "Error writing descriptor status=" + status);
+                    }
+
+                    writeDescriptorCallbacks.clear();
+                } else {
+                    Log.e(BleManager.LOG_TAG, "onDescriptorWrite with no callback");
+                }
+
+                completedCommand();
+            });
+        }
+
+        @Override
+        public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+            super.onDescriptorRead(gatt, descriptor, status);
+
+            mainHandler.post(() -> {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
+                        Log.d(BleManager.LOG_TAG, "Read needs bonding");
+                    }
+
+                    for (Callback readDescriptorCallback : readDescriptorCallbacks) {
+                        readDescriptorCallback.invoke(
+                                "Error reading descriptor " + descriptor.getUuid() + " status=" + status,
+                                null);
+                    }
+                    readDescriptorCallbacks.clear();
+                } else if (!readDescriptorCallbacks.isEmpty()) {
+                    final byte[] dataValue = copyOf(descriptor.getValue());
+
+                    for (Callback readDescriptorCallback : readDescriptorCallbacks) {
+                        readDescriptorCallback.invoke(
+                                null,
+                                BleManager.bytesToWritableArray(dataValue));
+                    }
+
+                    readDescriptorCallbacks.clear();
+                }
+                completedCommand();
+            });
+        }
+
+        @Override
+        public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
+            super.onReadRemoteRssi(gatt, rssi, status);
+
+            mainHandler.post(() -> {
+                if (!readRSSICallbacks.isEmpty()) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        updateRssi(rssi);
+                        for (Callback readRSSICallback : readRSSICallbacks) {
+                            readRSSICallback.invoke(null, rssi);
+                        }
+                    } else {
+                        for (Callback readRSSICallback : readRSSICallbacks) {
+                            readRSSICallback.invoke("Error reading RSSI status=" + status, null);
+                        }
+                    }
+
+                    readRSSICallbacks.clear();
+                }
+
+                completedCommand();
+            });
+        }
+
+        @Override
+        public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
+            super.onMtuChanged(gatt, mtu, status);
+            mainHandler.post(() -> {
+                if (!requestMTUCallbacks.isEmpty()) {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        for (Callback requestMTUCallback : requestMTUCallbacks) {
+                            requestMTUCallback.invoke(null, mtu);
+                        }
+                    } else {
+                        for (Callback requestMTUCallback : requestMTUCallbacks) {
+                            requestMTUCallback.invoke("Error requesting MTU status = " + status, null);
+                        }
+                    }
+
+                    requestMTUCallbacks.clear();
+                }
+
+                completedCommand();
+            });
+        }
+    };
 
     public Peripheral(BluetoothDevice device, int advertisingRSSI, byte[] scanRecord, ReactContext reactContext) {
         this.device = device;
@@ -125,9 +435,9 @@ public class Peripheral extends BluetoothGattCallback {
                     }
                     if (!autoconnect && options.hasKey("phy") && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         int phy = options.getInt("phy");
-                        gatt = device.connectGatt(activity, false, this, BluetoothDevice.TRANSPORT_LE, phy);
+                        gatt = device.connectGatt(activity, false, bluetoothGattCallback, BluetoothDevice.TRANSPORT_LE, phy);
                     } else {
-                        gatt = device.connectGatt(activity, autoconnect, this, BluetoothDevice.TRANSPORT_LE);
+                        gatt = device.connectGatt(activity, autoconnect, bluetoothGattCallback, BluetoothDevice.TRANSPORT_LE);
                     }
                 } else {
                     Log.d(BleManager.LOG_TAG, " Less than M");
@@ -141,7 +451,7 @@ public class Peripheral extends BluetoothGattCallback {
                     } catch (Exception e) {
                         e.printStackTrace();
                         Log.d(TAG, " Catch to call normal connection");
-                        gatt = device.connectGatt(activity, false, this);
+                        gatt = device.connectGatt(activity, false, bluetoothGattCallback);
                     }
                 }
             } else {
@@ -285,32 +595,6 @@ public class Peripheral extends BluetoothGattCallback {
         return device;
     }
 
-    @Override
-    public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-        super.onServicesDiscovered(gatt, status);
-        mainHandler.post(() -> {
-            if (gatt == null) {
-                for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
-                    retrieveServicesCallback.invoke("Error during service retrieval: gatt is null");
-                }
-            }
-            else if (status == BluetoothGatt.GATT_SUCCESS)
-            {
-                for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
-                    WritableMap map = this.asWritableMap(gatt);
-                    retrieveServicesCallback.invoke(null, map);
-                }
-            }
-            else {
-                for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
-                    retrieveServicesCallback.invoke("Error during service retrieval.");
-                }
-            }
-            retrieveServicesCallbacks.clear();
-            completedCommand();
-        });
-    }
-
     public void errorAndClearAllCallbacks(final String errorMessage) {
 
         for (Callback writeCallback : writeCallbacks) {
@@ -366,48 +650,6 @@ public class Peripheral extends BluetoothGattCallback {
         connected = false;
         clearBuffers();
     }
-    @Override
-    public void onConnectionStateChange(BluetoothGatt gatta, int status, final int newState) {
-
-        Log.d(BleManager.LOG_TAG, "onConnectionStateChange to " + newState + " on peripheral: " + device.getAddress()
-                + " with status " + status);
-
-        mainHandler.post(() -> {
-            gatt = gatta;
-
-            if (gatt != null && status != BluetoothGatt.GATT_SUCCESS) {
-                gatt.close();
-            }
-
-            connecting = false;
-            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                connected = true;
-
-                sendConnectionEvent(device, "BleManagerConnectPeripheral", status);
-
-                Log.d(BleManager.LOG_TAG, "Connected to: " + device.getAddress());
-                for (Callback connectCallback : connectCallbacks) {
-                    connectCallback.invoke();
-                }
-                connectCallbacks.clear();
-
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
-
-                errorAndClearAllCallbacks("Device disconnected");
-                resetQueuesAndBuffers();
-                if (gatt != null) {
-                    gatt.disconnect();
-                    gatt.close();
-                }
-
-                gatt = null;
-                sendConnectionEvent(device, "BleManagerDisconnectPeripheral", BluetoothGatt.GATT_SUCCESS);
-
-            }
-
-        });
-
-    }
 
     public void updateRssi(int rssi) {
         advertisingRSSI = rssi;
@@ -415,221 +657,6 @@ public class Peripheral extends BluetoothGattCallback {
 
     public void updateData(byte[] data) {
         advertisingDataBytes = data;
-    }
-
-    //////
-
-    @Override
-    public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            super.onCharacteristicChanged(gatt, characteristic);
-            onCharacteristicChanged(gatt, characteristic, characteristic.getValue());
-        }
-    }
-
-    @Override
-    public void onCharacteristicChanged(@NonNull final BluetoothGatt gatt, @NonNull final BluetoothGattCharacteristic characteristic, @NonNull final byte[] data) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            super.onCharacteristicChanged(gatt, characteristic, data);
-        }
-        try {
-            String charString = characteristic.getUuid().toString();
-            String service = characteristic.getService().getUuid().toString();
-            NotifyBufferContainer buffer = this.bufferedCharacteristics
-                    .get(this.bufferedCharacteristicsKey(service, charString));
-            byte[] dataValue = data;
-            // If for some reason the value's length >= 2*buffer size this will be able to
-            // handle it
-            while (dataValue != null) {
-                byte[] rest = null;
-                if (buffer != null) {
-                    rest = buffer.put(dataValue);
-                    if (buffer.isBufferFull()) {
-
-                        // fetch and reset
-                        dataValue = buffer.items.array();
-                        buffer.resetBuffer();
-                    } else {
-                        return;
-                    }
-                }
-                
-                WritableMap map = Arguments.createMap();
-                map.putString("peripheral", device.getAddress());
-                map.putString("characteristic", charString);
-                map.putString("service", service);
-                map.putArray("value", BleManager.bytesToWritableArray(dataValue));
-                sendEvent("BleManagerDidUpdateValueForCharacteristic", map);
-
-                // Check if rest exists. If so it needs to be added to the clean buffer
-                dataValue = rest;
-            }
-
-        } catch (Exception e) {
-            Log.d(BleManager.LOG_TAG, "onCharacteristicChanged ERROR: " + e);
-        }
-    }
-
-    @Override
-    public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            super.onCharacteristicRead(gatt, characteristic, status);
-            onCharacteristicRead(gatt, characteristic, characteristic.getValue(), status);
-        }
-    }
-    @Override
-    public void onCharacteristicRead(@NonNull final BluetoothGatt gatt,
-                                     @NonNull final BluetoothGattCharacteristic characteristic,
-                                     @NonNull byte[] data, int status) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            super.onCharacteristicRead(gatt, characteristic, data, status);
-        }
-        mainHandler.post(() -> {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
-                    Log.d(BleManager.LOG_TAG, "Read needs bonding");
-                }
-
-                for (Callback readCallback : readCallbacks) {
-                    readCallback.invoke(
-                            "Error reading " + characteristic.getUuid() + " status=" + status,
-                            null);
-                }
-                readCallbacks.clear();
-            } else if (!readCallbacks.isEmpty()) {
-                final byte[] dataValue = copyOf(data);
-
-                for (Callback readCallback : readCallbacks) {
-                    readCallback.invoke(null, BleManager.bytesToWritableArray(dataValue));
-                }
-                readCallbacks.clear();
-            }
-            completedCommand();
-        });
-
-    }
-
-    @Override
-    public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-        super.onCharacteristicWrite(gatt, characteristic, status);
-
-        mainHandler.post(() -> {
-            if (writeQueue.size() > 0) {
-                byte[] data = writeQueue.get(0);
-                writeQueue.remove(0);
-                doWrite(characteristic, data, null);
-            } else if (status != BluetoothGatt.GATT_SUCCESS) {
-                if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
-                    Log.d(BleManager.LOG_TAG, "Write needs bonding");
-                    // *not* doing completedCommand()
-                    return;
-                }
-                for (Callback writeCallback : writeCallbacks) {
-                    writeCallback.invoke("Error writing " + characteristic.getUuid() + " status=" + status, null);
-                }
-                writeCallbacks.clear();
-            } else if (!writeCallbacks.isEmpty()) {
-                for (Callback writeCallback : writeCallbacks) {
-                    writeCallback.invoke();
-                }
-                writeCallbacks.clear();
-            }
-            completedCommand();
-        });
-    }
-
-    @Override
-    public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-        mainHandler.post(() -> {
-            if (!registerNotifyCallbacks.isEmpty()) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    for (Callback registerNotifyCallback : registerNotifyCallbacks) {
-                        registerNotifyCallback.invoke();
-                    }
-                    Log.d(BleManager.LOG_TAG, "onDescriptorWrite success");
-                } else {
-                    for (Callback registerNotifyCallback : registerNotifyCallbacks) {
-                        registerNotifyCallback.invoke("Error writing descriptor status=" + status, null);
-                    }
-                    Log.e(BleManager.LOG_TAG, "Error writing descriptor status=" + status);
-                }
-
-                registerNotifyCallbacks.clear();
-            } else if (!writeDescriptorCallbacks.isEmpty()) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    for (Callback callback : writeDescriptorCallbacks) {
-                        callback.invoke();
-                    }
-                    Log.d(BleManager.LOG_TAG, "onDescriptorWrite success");
-                } else {
-                    for (Callback callback : writeDescriptorCallbacks) {
-                        callback.invoke("Error writing descriptor status=" + status, null);
-                    }
-                    Log.e(BleManager.LOG_TAG, "Error writing descriptor status=" + status);
-                }
-
-                writeDescriptorCallbacks.clear();
-            } else {
-                Log.e(BleManager.LOG_TAG, "onDescriptorWrite with no callback");
-            }
-
-            completedCommand();
-        });
-    }
-
-    @Override
-    public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-        super.onDescriptorRead(gatt, descriptor, status);
-
-        mainHandler.post(() -> {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                if (status == GATT_AUTH_FAIL || status == GATT_INSUFFICIENT_AUTHENTICATION) {
-                    Log.d(BleManager.LOG_TAG, "Read needs bonding");
-                }
-
-                for (Callback readDescriptorCallback : readDescriptorCallbacks) {
-                    readDescriptorCallback.invoke(
-                            "Error reading descriptor " + descriptor.getUuid() + " status=" + status,
-                            null);
-                }
-                readDescriptorCallbacks.clear();
-            } else if (!readDescriptorCallbacks.isEmpty()) {
-                final byte[] dataValue = copyOf(descriptor.getValue());
-
-                for (Callback readDescriptorCallback : readDescriptorCallbacks) {
-                    readDescriptorCallback.invoke(
-                            null,
-                            BleManager.bytesToWritableArray(dataValue));
-                }
-
-                readDescriptorCallbacks.clear();
-            }
-            completedCommand();
-        });
-    }
-
-    @Override
-    public void onReadRemoteRssi(BluetoothGatt gatt, int rssi, int status) {
-        super.onReadRemoteRssi(gatt, rssi, status);
-
-        mainHandler.post(() -> {
-            if (!readRSSICallbacks.isEmpty()) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    updateRssi(rssi);
-                    for (Callback readRSSICallback : readRSSICallbacks) {
-                        readRSSICallback.invoke(null, rssi);
-                    }
-                } else {
-                    for (Callback readRSSICallback : readRSSICallbacks) {
-                        readRSSICallback.invoke("Error reading RSSI status=" + status, null);
-                    }
-                }
-
-                readRSSICallbacks.clear();
-            }
-
-            completedCommand();
-        });
     }
 
     private String bufferedCharacteristicsKey(String serviceUUID, String characteristicUUID) {
@@ -1196,28 +1223,6 @@ public class Peripheral extends BluetoothGattCallback {
         });
     }
 
-    @Override
-    public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
-        super.onMtuChanged(gatt, mtu, status);
-        mainHandler.post(() -> {
-            if (!requestMTUCallbacks.isEmpty()) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    for (Callback requestMTUCallback : requestMTUCallbacks) {
-                        requestMTUCallback.invoke(null, mtu);
-                    }
-                } else {
-                    for (Callback requestMTUCallback : requestMTUCallbacks) {
-                        requestMTUCallback.invoke("Error requesting MTU status = " + status, null);
-                    }
-                }
-
-                requestMTUCallbacks.clear();
-            }
-
-            completedCommand();
-        });
-    }
-
     // Some peripherals re-use UUIDs for multiple characteristics so we need to
     // check the properties
     // and UUID of all characteristics instead of using
@@ -1258,5 +1263,4 @@ public class Peripheral extends BluetoothGattCallback {
     private String generateHashKey(UUID serviceUUID, BluetoothGattCharacteristic characteristic) {
         return serviceUUID + "|" + characteristic.getUuid() + "|" + characteristic.getInstanceId();
     }
-
 }
