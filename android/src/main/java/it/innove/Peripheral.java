@@ -36,6 +36,7 @@ import org.json.JSONException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -597,52 +598,23 @@ public class Peripheral {
         resetQueuesAndBuffers();
     }
 
-    private void errorAndClearAllCallbacks(final String errorMessage) {
-
-        for (Callback writeCallback : writeCallbacks) {
-            writeCallback.invoke(errorMessage);
-        }
-        writeCallbacks.clear();
-
-        for (Callback retrieveServicesCallback : retrieveServicesCallbacks) {
-            retrieveServicesCallback.invoke(errorMessage);
-        }
-        retrieveServicesCallbacks.clear();
-
-        for (Callback readRSSICallback : readRSSICallbacks) {
-            readRSSICallback.invoke(errorMessage);
-        }
-        readRSSICallbacks.clear();
-
-        for (Callback registerNotifyCallback : registerNotifyCallbacks) {
-            registerNotifyCallback.invoke(errorMessage);
-        }
-        registerNotifyCallbacks.clear();
-
-        for (Callback requestMTUCallback : requestMTUCallbacks) {
-            requestMTUCallback.invoke(errorMessage);
-        }
-        requestMTUCallbacks.clear();
-
-        for (Callback readCallback : readCallbacks) {
-            readCallback.invoke(errorMessage);
-        }
-        readCallbacks.clear();
-
-        for (Callback readDescriptorCallback : readDescriptorCallbacks) {
-            readDescriptorCallback.invoke(errorMessage);
-        }
-        readDescriptorCallbacks.clear();
-
-        for (Callback callback : writeDescriptorCallbacks) {
+    private static void clearCallbacksWithError(Collection<Callback> callbacks, final String errorMessage) {
+        for (Callback callback : callbacks)  {
             callback.invoke(errorMessage);
         }
-        writeDescriptorCallbacks.clear();
+        callbacks.clear();
+    }
 
-        for (Callback connectCallback : connectCallbacks) {
-            connectCallback.invoke(errorMessage);
-        }
-        connectCallbacks.clear();
+    private void errorAndClearAllCallbacks(final String errorMessage) {
+        clearCallbacksWithError(writeCallbacks, errorMessage);
+        clearCallbacksWithError(retrieveServicesCallbacks, errorMessage);
+        clearCallbacksWithError(readRSSICallbacks, errorMessage);
+        clearCallbacksWithError(registerNotifyCallbacks, errorMessage);
+        clearCallbacksWithError(requestMTUCallbacks, errorMessage);
+        clearCallbacksWithError(readCallbacks, errorMessage);
+        clearCallbacksWithError(readDescriptorCallbacks, errorMessage);
+        clearCallbacksWithError(writeDescriptorCallbacks, errorMessage);
+        clearCallbacksWithError(connectCallbacks, errorMessage);
     }
 
     private void resetQueuesAndBuffers() {
