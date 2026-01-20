@@ -136,8 +136,7 @@ public class Peripheral {
 
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
 
-                    errorAndClearAllCallbacks("Device disconnected");
-                    resetQueuesAndBuffers();
+                    cleanupOnDisconnect("Device disconnected");
                     if (gatt != null) {
                         gatt.disconnect();
                         gatt.close();
@@ -467,9 +466,7 @@ public class Peripheral {
 
     public void disconnect(final Callback callback, final boolean force) {
         mainHandler.post(() -> {
-            errorAndClearAllCallbacks("Disconnect called before the command completed");
-            resetQueuesAndBuffers();
-            connected = false;
+            cleanupOnDisconnect("Disconnect called before the command completed");
 
             if (gatt != null) {
                 try {
@@ -593,6 +590,11 @@ public class Peripheral {
 
     public BluetoothDevice getDevice() {
         return device;
+    }
+
+    private void cleanupOnDisconnect(final String errorMessage) {
+        errorAndClearAllCallbacks(errorMessage);
+        resetQueuesAndBuffers();
     }
 
     private void errorAndClearAllCallbacks(final String errorMessage) {
