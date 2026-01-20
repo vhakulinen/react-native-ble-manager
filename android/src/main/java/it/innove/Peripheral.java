@@ -595,7 +595,7 @@ public class Peripheral {
         return device;
     }
 
-    public void errorAndClearAllCallbacks(final String errorMessage) {
+    private void errorAndClearAllCallbacks(final String errorMessage) {
 
         for (Callback writeCallback : writeCallbacks) {
             writeCallback.invoke(errorMessage);
@@ -643,7 +643,7 @@ public class Peripheral {
         connectCallbacks.clear();
     }
 
-    public void resetQueuesAndBuffers() {
+    private void resetQueuesAndBuffers() {
         writeQueue.clear();
         commandQueue.clear();
         commandQueueBusy = false;
