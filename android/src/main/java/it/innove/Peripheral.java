@@ -594,18 +594,7 @@ public class Peripheral {
     }
 
     private void cleanupOnDisconnect(final String errorMessage) {
-        errorAndClearAllCallbacks(errorMessage);
-        resetQueuesAndBuffers();
-    }
-
-    private static void clearCallbacksWithError(Collection<Callback> callbacks, final String errorMessage) {
-        for (Callback callback : callbacks)  {
-            callback.invoke(errorMessage);
-        }
-        callbacks.clear();
-    }
-
-    private void errorAndClearAllCallbacks(final String errorMessage) {
+        // Clear and error out any pending callbacks.
         clearCallbacksWithError(writeCallbacks, errorMessage);
         clearCallbacksWithError(retrieveServicesCallbacks, errorMessage);
         clearCallbacksWithError(readRSSICallbacks, errorMessage);
@@ -615,14 +604,22 @@ public class Peripheral {
         clearCallbacksWithError(readDescriptorCallbacks, errorMessage);
         clearCallbacksWithError(writeDescriptorCallbacks, errorMessage);
         clearCallbacksWithError(connectCallbacks, errorMessage);
-    }
 
-    private void resetQueuesAndBuffers() {
+        // Reset other queues.
         writeQueue.clear();
         commandQueue.clear();
         commandQueueBusy = false;
         connected = false;
-        clearBuffers();
+
+        for (Map.Entry<String, NotifyBufferContainer> entry : this.bufferedCharacteristics.entrySet())
+            entry.getValue().resetBuffer();
+    }
+
+    private static void clearCallbacksWithError(Collection<Callback> callbacks, final String errorMessage) {
+        for (Callback callback : callbacks)  {
+            callback.invoke(errorMessage);
+        }
+        callbacks.clear();
     }
 
     public void updateRssi(int rssi) {
@@ -635,11 +632,6 @@ public class Peripheral {
 
     private String bufferedCharacteristicsKey(String serviceUUID, String characteristicUUID) {
         return serviceUUID + "-" + characteristicUUID;
-    }
-
-    private void clearBuffers() {
-        for (Map.Entry<String, NotifyBufferContainer> entry : this.bufferedCharacteristics.entrySet())
-            entry.getValue().resetBuffer();
     }
 
     private void setNotify(UUID serviceUUID, UUID characteristicUUID, final Boolean notify, Callback callback) {
