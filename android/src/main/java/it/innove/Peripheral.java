@@ -584,7 +584,7 @@ public class Peripheral {
         return map;
     }
 
-    public WritableMap asWritableMap(BluetoothGatt gatt) {
+    private WritableMap asWritableMap(BluetoothGatt gatt) {
 
         WritableMap map = asWritableMap();
 
@@ -1107,7 +1107,7 @@ public class Peripheral {
         return null;
     }
 
-    public boolean doWrite(final BluetoothGattCharacteristic characteristic, byte[] data, final Callback callback) {
+    private boolean doWrite(final BluetoothGattCharacteristic characteristic, byte[] data, final Callback callback) {
         final byte[] copyOfData = copyOf(data);
         return enqueue(new Runnable() {
             @Override
