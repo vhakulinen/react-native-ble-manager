@@ -72,10 +72,6 @@ export interface StartOptions {
    * [iOS only]
    */
   queueIdentifierKey?: string;
-  /**
-   * [android only]
-   */
-  forceLegacy?: boolean;
 }
 
 export interface ConnectOptions {
@@ -118,18 +114,10 @@ export interface ScanOptions {
    */
   reportDelay?: number;
   /**
-   * Does not work in conjunction with legacy scans. Setting an unsupported PHY will result in a failure to scan,
-   * use with caution.
+   * Setting an unsupported PHY will result in a failure to scan, use with caution.
    * https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder#setPhy(int)
    */
   phy?: BleScanPhyMode;
-  /**
-   * true by default for compatibility with older apps.
-   * In that mode, scan will only retrieve advertisements data as specified by BLE 4.2 and below.
-   * Change this if you want to benefit from the extended BLE 5 advertisement spec.
-   * https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder#setLegacy(boolean)
-   */
-  legacy?: boolean;
   /**
    * an android ScanFilter, used if present to restrict scan results to devices with a specific advertising name.
    * This is a whole word match, not a partial search.
@@ -138,7 +126,7 @@ export interface ScanOptions {
    * if `callbackType` is set to `FirstMatch`, the shortenedLocalName will be used for filtering.
    * https://developer.android.com/reference/android/bluetooth/le/ScanFilter.Builder#setDeviceName(java.lang.String)
    */
-  exactAdvertisingName?: string|string[];
+  exactAdvertisingName?: string | string[];
   /**
    * Android only. Filters scan results by manufacturer id and data.
    * `manufacturerId` usually matches the company id, can be given as a hex, e.g. 0xe4f7.

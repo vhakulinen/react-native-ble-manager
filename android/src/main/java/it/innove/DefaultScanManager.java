@@ -59,10 +59,6 @@ public class DefaultScanManager extends ScanManager {
         ScanSettings.Builder scanSettingsBuilder = new ScanSettings.Builder();
         List<ScanFilter> filters = new ArrayList<>();
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && options.hasKey("legacy")) {
-            scanSettingsBuilder.setLegacy(options.getBoolean("legacy"));
-        }
-
         if (options.hasKey("scanMode")) {
             scanSettingsBuilder.setScanMode(options.getInt("scanMode"));
         }

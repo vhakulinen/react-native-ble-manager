@@ -23,7 +23,6 @@ The parameter is optional the configuration keys are:
 - `showAlert` - `Boolean` - [iOS only] Show or hide the alert if the bluetooth is turned off during initialization
 - `restoreIdentifierKey` - `String` - [iOS only] Unique key to use for CoreBluetooth state restoration
 - `queueIdentifierKey` - `String` - [iOS only] Unique key to use for a queue identifier on which CoreBluetooth events will be dispatched
-- `forceLegacy` - `Boolean` - [Android only] Force to use the LegacyScanManager
 
 **Examples**
 
@@ -53,7 +52,6 @@ Returns a `Promise` object.
   - `scanMode` - `Number` - [Android only] corresponding to [`setScanMode`](<https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder.html#setScanMode(int)>). Defaults to `ScanSettings.SCAN_MODE_LOW_POWER`.
   - `reportDelay` - `Number` - [Android only] corresponding to [`setReportDelay`](<https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder.html#setReportDelay(long)>). Defaults to `0ms`.
   - `phy` - `Number` - [Android only] corresponding to [`setPhy`](<https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder#setPhy(int)>)
-  - `legacy` - `Boolean` - [Android only] corresponding to [`setLegacy`](<https://developer.android.com/reference/android/bluetooth/le/ScanSettings.Builder#setLegacy(boolean)>)
   - `exactAdvertisingName` - `string[]` - In Android corresponds to the `ScanFilter` [deviceName](<https://developer.android.com/reference/android/bluetooth/le/ScanFilter.Builder#setDeviceName(java.lang.String)>). In iOS the filter is done manually before sending the peripheral.
   - `manufacturerData` - `object` - [Android only] corresponding to [`setManufacturerData`](<https://developer.android.com/reference/android/bluetooth/le/ScanFilter.Builder#setManufacturerData(int,%20byte[],%20byte[])>). Filter by manufacturer id or data.
     - `manufacturerId` - `number` - Manufacturer / company id to filter for.
