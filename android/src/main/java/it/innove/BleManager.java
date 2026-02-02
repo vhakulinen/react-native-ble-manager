@@ -549,7 +549,7 @@ class BleManager extends ReactContextBaseJavaModule {
         synchronized (peripherals) {
             if (!peripherals.containsKey(address)) {
                 Peripheral peripheral;
-                peripheral = new DefaultPeripheral(device, reactContext);
+                peripheral = new Peripheral(device, reactContext);
                 peripherals.put(device.getAddress(), peripheral);
             }
         }
@@ -698,7 +698,7 @@ class BleManager extends ReactContextBaseJavaModule {
 
                 if (bondState == BluetoothDevice.BOND_BONDED) {
                     Peripheral peripheral;
-                    peripheral = new DefaultPeripheral(device, reactContext);
+                    peripheral = new Peripheral(device, reactContext);
                     WritableMap map = peripheral.asWritableMap();
                     sendEvent("BleManagerPeripheralDidBond", map);
                 }
@@ -787,7 +787,7 @@ class BleManager extends ReactContextBaseJavaModule {
         Set<BluetoothDevice> deviceSet = getBluetoothAdapter().getBondedDevices();
         for (BluetoothDevice device : deviceSet) {
             Peripheral peripheral;
-            peripheral = new DefaultPeripheral(device, reactContext);
+            peripheral = new Peripheral(device, reactContext);
             WritableMap jsonBundle = peripheral.asWritableMap();
             map.pushMap(jsonBundle);
         }
@@ -904,7 +904,7 @@ class BleManager extends ReactContextBaseJavaModule {
                 }
                 if (BluetoothAdapter.checkBluetoothAddress(peripheralUUID)) {
                     BluetoothDevice device = bluetoothAdapter.getRemoteDevice(peripheralUUID);
-                    peripheral = new DefaultPeripheral(device, reactContext);
+                    peripheral = new Peripheral(device, reactContext);
                     peripherals.put(peripheralUUID, peripheral);
                 }
             }

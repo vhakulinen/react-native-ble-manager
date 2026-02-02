@@ -13,12 +13,16 @@ import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothStatusCodes;
 
+import android.bluetooth.le.ScanRecord;
+import android.bluetooth.le.ScanResult;
 import android.content.Context;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.ParcelUuid;
 import android.util.Base64;
 import android.util.Log;
+import android.util.SparseArray;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -34,6 +38,7 @@ import com.facebook.react.modules.core.RCTNativeAppEventEmitter;
 import org.json.JSONException;
 
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -60,6 +65,8 @@ public class Peripheral {
     protected final Map<String, NotifyBufferContainer> bufferedCharacteristics;
 ;
     protected volatile byte[] advertisingDataBytes = new byte[0];
+    private ScanRecord advertisingData;
+    private ScanResult scanResult;
     protected volatile int advertisingRSSI;
     private volatile boolean connected = false;
     private volatile boolean connecting = false;
@@ -405,6 +412,12 @@ public class Peripheral {
         this.reactContext = reactContext;
     }
 
+    public Peripheral(ReactContext reactContext, ScanResult result) {
+        this(result.getDevice(), result.getRssi(), result.getScanRecord().getBytes(), reactContext);
+        this.advertisingData = result.getScanRecord();
+        this.scanResult = result;
+    }
+
     private void sendEvent(String eventName, @Nullable WritableMap params) {
         synchronized (reactContext) {
             reactContext.getJSModule(RCTNativeAppEventEmitter.class).emit(eventName, params);
@@ -489,6 +502,11 @@ public class Peripheral {
         });
     }
 
+    public void updateData(ScanResult result) {
+        advertisingData = result.getScanRecord();
+        advertisingDataBytes = advertisingData.getBytes();
+    }
+
     public WritableMap asWritableMap() {
         WritableMap map = Arguments.createMap();
         WritableMap advertising = Arguments.createMap();
@@ -504,8 +522,59 @@ public class Peripheral {
 
             advertising.putMap("rawData", byteArrayToWritableMap(advertisingDataBytes));
 
-            // No scanResult to access so we can't check if peripheral is connectable
-            advertising.putBoolean("isConnectable", true);
+            if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // We can check if peripheral is connectable using the scanresult
+                if (this.scanResult != null) {
+                    advertising.putBoolean("isConnectable", scanResult.isConnectable());
+                }
+            } else {
+                // We can't check if peripheral is connectable
+                advertising.putBoolean("isConnectable", true);
+            }
+
+            if (advertisingData != null) {
+                String deviceName = advertisingData.getDeviceName();
+                if (deviceName != null)
+                    advertising.putString("localName", deviceName.replace("\0", ""));
+
+                WritableArray serviceUuids = Arguments.createArray();
+                if (advertisingData.getServiceUuids() != null && advertisingData.getServiceUuids().size() != 0) {
+                    for (ParcelUuid uuid : advertisingData.getServiceUuids()) {
+                        serviceUuids.pushString(UUIDHelper.uuidToString(uuid.getUuid()));
+                    }
+                }
+                advertising.putArray("serviceUUIDs", serviceUuids);
+
+                WritableMap serviceData = Arguments.createMap();
+                if (advertisingData.getServiceData() != null) {
+                    for (Map.Entry<ParcelUuid, byte[]> entry : advertisingData.getServiceData().entrySet()) {
+                        if (entry.getValue() != null) {
+                            serviceData.putMap(UUIDHelper.uuidToString((entry.getKey()).getUuid()), byteArrayToWritableMap(entry.getValue()));
+                        }
+                    }
+                }
+                advertising.putMap("serviceData", serviceData);
+
+                WritableMap manufacturerData = Arguments.createMap();
+                SparseArray<byte[]> manufacturerRawData = advertisingData.getManufacturerSpecificData();
+                byte[] manufacturerRawBytes = new byte[0];
+                if (manufacturerRawData != null && manufacturerRawData.size() > 0) {
+                    int key = manufacturerRawData.keyAt(0);
+                    byte[] data = manufacturerRawData.valueAt(0);
+                    manufacturerData.putMap(String.format("%04x", key), byteArrayToWritableMap(data));
+
+                    ByteBuffer keyBuffer = ByteBuffer.allocate(Integer.SIZE / Byte.SIZE);
+                    keyBuffer.putInt(key);
+                    byte[] keyBytes = keyBuffer.array();
+                    manufacturerRawBytes = new byte[keyBytes.length + data.length];
+                    System.arraycopy(keyBytes, 0, manufacturerRawBytes, 0, keyBytes.length);
+                    System.arraycopy(data, 0, manufacturerRawBytes, keyBytes.length, data.length);
+                }
+                advertising.putMap("manufacturerData", manufacturerData);
+                advertising.putMap("manufacturerRawData", byteArrayToWritableMap(manufacturerRawBytes));
+
+                advertising.putInt("txPowerLevel", advertisingData.getTxPowerLevel());
+            }
 
             map.putMap("advertising", advertising);
         } catch (Exception e) { // this shouldn't happen
@@ -624,10 +693,6 @@ public class Peripheral {
 
     public void updateRssi(int rssi) {
         advertisingRSSI = rssi;
-    }
-
-    public void updateData(byte[] data) {
-        advertisingDataBytes = data;
     }
 
     private String bufferedCharacteristicsKey(String serviceUUID, String characteristicUUID) {

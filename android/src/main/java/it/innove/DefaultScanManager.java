@@ -207,9 +207,9 @@ public class DefaultScanManager extends ScanManager {
 
         Log.i(BleManager.LOG_TAG, "DiscoverPeripheral: " + info);
 
-        DefaultPeripheral peripheral = (DefaultPeripheral) bleManager.getPeripheral(result.getDevice());
+        Peripheral peripheral = bleManager.getPeripheral(result.getDevice());
         if (peripheral == null) {
-            peripheral = new DefaultPeripheral(bleManager.getReactContext(), result);
+            peripheral = new Peripheral(bleManager.getReactContext(), result);
         } else {
             peripheral.updateData(result);
             peripheral.updateRssi(result.getRssi());
