@@ -1286,12 +1286,4 @@ public class Peripheral {
             return null;
         }
     }
-
-    private String generateHashKey(BluetoothGattCharacteristic characteristic) {
-        return generateHashKey(characteristic.getService().getUuid(), characteristic);
-    }
-
-    private String generateHashKey(UUID serviceUUID, BluetoothGattCharacteristic characteristic) {
-        return serviceUUID + "|" + characteristic.getUuid() + "|" + characteristic.getInstanceId();
-    }
 }
