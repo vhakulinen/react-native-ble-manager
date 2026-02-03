@@ -52,7 +52,7 @@ public class CompanionScanner {
 
             // The user either selected a device or cancelled the activity and we're
             // either going to pass a peripheral or null back to the scanCallback.
-            Peripheral peripheral = null;
+            MyPeripheral peripheral = null;
 
             if (resultCode == RESULT_OK) {
                 // Have device?

@@ -7,7 +7,6 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothDevice;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
@@ -207,9 +206,9 @@ public class DefaultScanManager extends ScanManager {
 
         Log.i(BleManager.LOG_TAG, "DiscoverPeripheral: " + info);
 
-        Peripheral peripheral = bleManager.getPeripheral(result.getDevice());
+        MyPeripheral peripheral = bleManager.getPeripheral(result.getDevice());
         if (peripheral == null) {
-            peripheral = new Peripheral(bleManager.getReactContext(), result);
+            peripheral = new MyPeripheral(bleManager.getReactContext(), result);
         } else {
             peripheral.updateData(result);
             peripheral.updateRssi(result.getRssi());

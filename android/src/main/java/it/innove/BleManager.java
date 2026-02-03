@@ -98,7 +98,7 @@ class BleManager extends ReactContextBaseJavaModule {
     };
 
     // key is the MAC Address
-    private final Map<String, Peripheral> peripherals = new LinkedHashMap<>();
+    private final Map<String, MyPeripheral> peripherals = new LinkedHashMap<>();
     // scan session id
 
     public BleManager(ReactApplicationContext reactContext) {
@@ -168,6 +168,16 @@ class BleManager extends ReactContextBaseJavaModule {
 
         callback.invoke();
         Log.d(LOG_TAG, "BleManager initialized");
+
+        // On iOS the Bluetooth stack automatically calls the delegate with its current status. To
+        // match that functionality, run our check state here which will emit the BleManagerDidUpdateState
+        // event.
+        checkState(new Callback() {
+            @Override
+            public void invoke(Object... objects) {
+                // noop.
+            }
+        });
     }
 
     @SuppressLint("MissingPermission")
@@ -211,10 +221,11 @@ class BleManager extends ReactContextBaseJavaModule {
         }
 
         synchronized (peripherals) {
-            for (Iterator<Map.Entry<String, Peripheral>> iterator = peripherals.entrySet().iterator(); iterator
+            for (Iterator<Map.Entry<String, MyPeripheral>> iterator = peripherals.entrySet().iterator(); iterator
                     .hasNext(); ) {
-                Map.Entry<String, Peripheral> entry = iterator.next();
+                Map.Entry<String, MyPeripheral> entry = iterator.next();
                 if (!(entry.getValue().isConnected() || entry.getValue().isConnecting())) {
+                    entry.getValue().close();
                     iterator.remove();
                 }
             }
@@ -273,7 +284,7 @@ class BleManager extends ReactContextBaseJavaModule {
             }
         }
 
-        Peripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
+        MyPeripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
         if (peripheral == null) {
             callback.invoke("Invalid peripheral uuid");
             return;
@@ -293,7 +304,7 @@ class BleManager extends ReactContextBaseJavaModule {
     private void removeBond(String peripheralUUID, Callback callback) {
         Log.d(LOG_TAG, "Remove bond to: " + peripheralUUID);
 
-        Peripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
+        MyPeripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
         if (peripheral == null) {
             callback.invoke("Invalid peripheral uuid");
             return;
@@ -315,253 +326,199 @@ class BleManager extends ReactContextBaseJavaModule {
     public void connect(String peripheralUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "Connect to: " + peripheralUUID);
 
-        Peripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
+        MyPeripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
         if (peripheral == null) {
-            callback.invoke("Invalid peripheral uuid");
+            callback.invoke("Peripheral not found");
             return;
         }
-        peripheral.connect(callback, getCurrentActivity(), options);
+        peripheral.connect(callback, options.getBoolean("autoconnect"), getTimeoutMs(options));
     }
 
     @ReactMethod
-    public void disconnect(String peripheralUUID, boolean force, Callback callback) {
+    public void disconnect(String peripheralUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "Disconnect from: " + peripheralUUID);
 
-        Peripheral peripheral = peripherals.get(peripheralUUID);
+        MyPeripheral peripheral = retrievePeripheral(peripheralUUID);
         if (peripheral != null) {
-            peripheral.disconnect(callback, force);
+            Integer timeoutMs = getTimeoutMs(options);
+            peripheral.disconnect(timeoutMs, callback);
         } else
             callback.invoke("Peripheral not found");
     }
 
     @ReactMethod
-    public void startNotificationUseBuffer(String deviceUUID, String serviceUUID, String characteristicUUID,
-                                           Integer buffer, Callback callback) {
+    public void startNotification(String deviceUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "startNotification");
+        String serviceUUID = options.getString("service");
+        String characteristicUUID = options.getString("characteristic");
+        Integer timeoutMs = getTimeoutMs(options);
+
         if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
+            callback.invoke("service and characteristic required.");
             return;
         }
-        Peripheral peripheral = peripherals.get(deviceUUID);
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
         if (peripheral != null) {
             peripheral.registerNotify(UUIDHelper.uuidFromString(serviceUUID),
-                    UUIDHelper.uuidFromString(characteristicUUID), buffer, callback);
-        } else
+                    UUIDHelper.uuidFromString(characteristicUUID), timeoutMs, callback);
+        } else {
             callback.invoke("Peripheral not found");
-    }
-
-    @ReactMethod
-    public void startNotification(String deviceUUID, String serviceUUID, String characteristicUUID, Callback callback) {
-        Log.d(LOG_TAG, "startNotification");
-        if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
-            return;
         }
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.registerNotify(UUIDHelper.uuidFromString(serviceUUID),
-                        UUIDHelper.uuidFromString(characteristicUUID), 1, callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found");
     }
 
     @ReactMethod
-    public void stopNotification(String deviceUUID, String serviceUUID, String characteristicUUID, Callback callback) {
+    public void stopNotification(String deviceUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "stopNotification");
+        String serviceUUID = options.getString("service");
+        String characteristicUUID = options.getString("characteristic");
+        Integer timeoutMs = getTimeoutMs(options);
+
         if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
+            callback.invoke("service and characteristic required.");
             return;
         }
-        Peripheral peripheral = peripherals.get(deviceUUID);
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
         if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.removeNotify(UUIDHelper.uuidFromString(serviceUUID),
-                        UUIDHelper.uuidFromString(characteristicUUID), callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
+            peripheral.removeNotify(UUIDHelper.uuidFromString(serviceUUID),
+                    UUIDHelper.uuidFromString(characteristicUUID), timeoutMs, callback);
+        } else {
             callback.invoke("Peripheral not found");
+        }
     }
 
     @ReactMethod
-    public void write(String deviceUUID, String serviceUUID, String characteristicUUID, ReadableArray message,
-                      Integer maxByteSize, Callback callback) {
+    public void write(String deviceUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "Write to: " + deviceUUID);
+        String serviceUUID = options.getString("service");
+        String characteristicUUID = options.getString("characteristic");
+        ReadableArray message = options.getArray("data");
+        Integer timeoutMs = getTimeoutMs(options);
+
         if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
+            callback.invoke("service and characteristic required.");
             return;
         }
-        Peripheral peripheral = peripherals.get(deviceUUID);
+        if (message == null) {
+            callback.invoke("data required.");
+            return;
+        }
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
         if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                byte[] decoded = new byte[message.size()];
-                for (int i = 0; i < message.size(); i++) {
-                    decoded[i] = Integer.valueOf(message.getInt(i)).byteValue();
-                }
-                Log.d(LOG_TAG, "Message(" + decoded.length + "): " + bytesToHex(decoded));
-                peripheral.write(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
-                        decoded, maxByteSize, null, callback, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found");
-    }
-
-    @ReactMethod
-    public void writeWithoutResponse(String deviceUUID, String serviceUUID, String characteristicUUID,
-                                     ReadableArray message, Integer maxByteSize, Integer queueSleepTime, Callback callback) {
-        Log.d(LOG_TAG, "Write without response to: " + deviceUUID);
-        if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
-            return;
-        }
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                byte[] decoded = new byte[message.size()];
-                for (int i = 0; i < message.size(); i++) {
-                    decoded[i] = Integer.valueOf(message.getInt(i)).byteValue();
-                }
-                Log.d(LOG_TAG, "Message(" + decoded.length + "): " + bytesToHex(decoded));
-                peripheral.write(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
-                        decoded, maxByteSize, queueSleepTime, callback, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found");
-    }
-
-    @ReactMethod
-    public void read(String deviceUUID, String serviceUUID, String characteristicUUID, Callback callback) {
-        Log.d(LOG_TAG, "Read from: " + deviceUUID);
-        if (serviceUUID == null || characteristicUUID == null) {
-            callback.invoke("ServiceUUID and characteristicUUID required.");
-            return;
-        }
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.read(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
-                        callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found", null);
-    }
-
-    @ReactMethod
-    public void readDescriptor(String deviceUUID, String serviceUUID, String characteristicUUID, String descriptorUUID, Callback callback) {
-        Log.d(LOG_TAG, "Read descriptor from: " + deviceUUID);
-        if (serviceUUID == null || characteristicUUID == null || descriptorUUID == null) {
-            callback.invoke("ServiceUUID, CharacteristicUUID and descriptorUUID required.", null);
-            return;
-        }
-
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral == null) {
-            callback.invoke("Peripheral not found", null);
-        } else if (!peripheral.isConnected()) {
-            callback.invoke("Peripheral not connected", null);
-        } else {
-            peripheral.readDescriptor(
-                    UUIDHelper.uuidFromString(serviceUUID),
-                    UUIDHelper.uuidFromString(characteristicUUID),
-                    UUIDHelper.uuidFromString(descriptorUUID),
-                    callback);
-        }
-    }
-
-    @ReactMethod
-    public void writeDescriptor(String deviceUUID, String serviceUUID, String characteristicUUID, String descriptorUUID, ReadableArray message, Callback callback) {
-        Log.d(LOG_TAG, "Write descriptor from: " + deviceUUID);
-        if (serviceUUID == null || characteristicUUID == null || descriptorUUID == null) {
-            callback.invoke("ServiceUUID, CharacteristicUUID and descriptorUUID required.", null);
-            return;
-        }
-
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral == null) {
-            callback.invoke("Peripheral not found", null);
-        } else if (!peripheral.isConnected()) {
-            callback.invoke("Peripheral not connected", null);
-        } else {
             byte[] decoded = new byte[message.size()];
             for (int i = 0; i < message.size(); i++) {
                 decoded[i] = Integer.valueOf(message.getInt(i)).byteValue();
             }
             Log.d(LOG_TAG, "Message(" + decoded.length + "): " + bytesToHex(decoded));
-            peripheral.writeDescriptor(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID), UUIDHelper.uuidFromString(descriptorUUID), decoded, callback);
+            peripheral.write(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
+                    decoded, timeoutMs, callback, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+        } else {
+            callback.invoke("Peripheral not found");
         }
     }
 
     @ReactMethod
-    public void retrieveServices(String deviceUUID, ReadableArray services, Callback callback) {
-        Log.d(LOG_TAG, "Retrieve services from: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
+    public void writeWithoutResponse(String deviceUUID, ReadableMap options, Callback callback) {
+        Log.d(LOG_TAG, "Write without response to: " + deviceUUID);
+        String serviceUUID = options.getString("service");
+        String characteristicUUID = options.getString("characteristic");
+        ReadableArray message = options.getArray("data");
+        Integer timeoutMs = getTimeoutMs(options);
+
+        if (serviceUUID == null || characteristicUUID == null) {
+            callback.invoke("service and characteristic required.");
+            return;
+        }
+        if (message == null) {
+            callback.invoke("data required.");
+            return;
+        }
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
         if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.retrieveServices(callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
+            byte[] decoded = new byte[message.size()];
+            for (int i = 0; i < message.size(); i++) {
+                decoded[i] = Integer.valueOf(message.getInt(i)).byteValue();
             }
-        } else
+            Log.d(LOG_TAG, "Message(" + decoded.length + "): " + bytesToHex(decoded));
+            peripheral.write(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
+                    decoded, timeoutMs, callback, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
+        } else {
+            callback.invoke("Peripheral not found");
+        }
+    }
+
+    @ReactMethod
+    public void read(String deviceUUID, ReadableMap options, Callback callback) {
+        Log.d(LOG_TAG, "Read from: " + deviceUUID);
+        String serviceUUID = options.getString("service");
+        String characteristicUUID = options.getString("characteristic");
+        Integer timeoutMs = getTimeoutMs(options);
+
+        if (serviceUUID == null || characteristicUUID == null) {
+            callback.invoke("service and characteristic required.");
+            return;
+        }
+
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
+        if (peripheral != null) {
+            peripheral.read(UUIDHelper.uuidFromString(serviceUUID), UUIDHelper.uuidFromString(characteristicUUID),
+                    timeoutMs, callback);
+        } else {
             callback.invoke("Peripheral not found", null);
+        }
+    }
+
+    @ReactMethod
+    public void readDescriptor(String deviceUUID, String serviceUUID, String characteristicUUID, String descriptorUUID, Callback callback) {
+        Log.d(LOG_TAG, "Read descriptor from: " + deviceUUID);
+        callback.invoke("Not supported");
+    }
+
+    @ReactMethod
+    public void writeDescriptor(String deviceUUID, String serviceUUID, String characteristicUUID, String descriptorUUID, ReadableArray message, Callback callback) {
+        Log.d(LOG_TAG, "Write descriptor from: " + deviceUUID);
+        callback.invoke("Not supported");
+    }
+
+    @ReactMethod
+    public void retrieveServices(String deviceUUID, ReadableMap options, Callback callback) {
+        Log.d(LOG_TAG, "Retrieve services from: " + deviceUUID);
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
+        if (peripheral != null) {
+            Integer timeoutMs = getTimeoutMs(options);
+            peripheral.retrieveServices(timeoutMs, callback);
+        } else {
+            callback.invoke("Peripheral not found", null);
+        }
     }
 
     @ReactMethod
     public void refreshCache(String deviceUUID, Callback callback) {
         Log.d(LOG_TAG, "Refreshing cache for: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.refreshCache(callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found");
+        callback.invoke("Not supported");
     }
 
     @ReactMethod
     public void readRSSI(String deviceUUID, Callback callback) {
         Log.d(LOG_TAG, "Read RSSI from: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            if (peripheral.isConnected()) {
-                peripheral.readRSSI(callback);
-            } else {
-                callback.invoke("Peripheral not connected", null);
-            }
-        } else
-            callback.invoke("Peripheral not found", null);
+        callback.invoke("Not supported");
     }
 
-    public Peripheral savePeripheral(BluetoothDevice device) {
+    public MyPeripheral savePeripheral(BluetoothDevice device) {
         String address = device.getAddress();
         synchronized (peripherals) {
             if (!peripherals.containsKey(address)) {
-                Peripheral peripheral;
-                peripheral = new Peripheral(device, reactContext);
+                MyPeripheral peripheral = new MyPeripheral(device, reactContext);
                 peripherals.put(device.getAddress(), peripheral);
             }
+            return peripherals.get(address);
         }
-        return peripherals.get(address);
     }
 
-    public Peripheral getPeripheral(BluetoothDevice device) {
-        String address = device.getAddress();
-        return peripherals.get(address);
+    public MyPeripheral getPeripheral(BluetoothDevice device) {
+        return retrievePeripheral(device.getAddress());
     }
 
-    public Peripheral savePeripheral(Peripheral peripheral) {
+    public MyPeripheral savePeripheral(MyPeripheral peripheral) {
         synchronized (peripherals) {
             peripherals.put(peripheral.getDevice().getAddress(), peripheral);
         }
@@ -586,6 +543,7 @@ class BleManager extends ReactContextBaseJavaModule {
                     break;
                 case BluetoothAdapter.STATE_TURNING_OFF:
                     state = "turning_off";
+                    clearPeripherals();
                     if (scanManager != null) {
                         scanManager.setScanning(false);
                     }
@@ -638,11 +596,10 @@ class BleManager extends ReactContextBaseJavaModule {
                 switch (state) {
                     case BluetoothAdapter.STATE_OFF:
                         stringState = "off";
-                        clearPeripherals();
                         break;
                     case BluetoothAdapter.STATE_TURNING_OFF:
                         stringState = "turning_off";
-                        disconnectPeripherals();
+                        clearPeripherals();
                         break;
                     case BluetoothAdapter.STATE_ON:
                         stringState = "on";
@@ -697,8 +654,7 @@ class BleManager extends ReactContextBaseJavaModule {
                 }
 
                 if (bondState == BluetoothDevice.BOND_BONDED) {
-                    Peripheral peripheral;
-                    peripheral = new Peripheral(device, reactContext);
+                    MyPeripheral peripheral = new MyPeripheral(device, reactContext);
                     WritableMap map = peripheral.asWritableMap();
                     sendEvent("BleManagerPeripheralDidBond", map);
                 }
@@ -725,22 +681,11 @@ class BleManager extends ReactContextBaseJavaModule {
     };
 
     private void clearPeripherals() {
-        if (!peripherals.isEmpty()) {
-            synchronized (peripherals) {
-                peripherals.clear();
-            }
-        }
-    }
-
-    private void disconnectPeripherals() {
-        if (!peripherals.isEmpty()) {
-            synchronized (peripherals) {
-                for (Peripheral peripheral : peripherals.values()) {
-                    if (peripheral.isConnected()) {
-                        peripheral.disconnect(null, true);
-                    }
-                }
-            }
+        synchronized (peripherals) {
+            peripherals.forEach((k, p) -> {
+                p.close();
+            });
+            peripherals.clear();
         }
     }
 
@@ -749,8 +694,8 @@ class BleManager extends ReactContextBaseJavaModule {
         Log.d(LOG_TAG, "Get discovered peripherals");
         WritableArray map = Arguments.createArray();
         synchronized (peripherals) {
-            for (Map.Entry<String, Peripheral> entry : peripherals.entrySet()) {
-                Peripheral peripheral = entry.getValue();
+            for (Map.Entry<String, MyPeripheral> entry : peripherals.entrySet()) {
+                MyPeripheral peripheral = entry.getValue();
                 WritableMap jsonBundle = peripheral.asWritableMap();
                 map.pushMap(jsonBundle);
             }
@@ -772,7 +717,7 @@ class BleManager extends ReactContextBaseJavaModule {
 
         List<BluetoothDevice> peripherals = getBluetoothManager().getConnectedDevices(GATT);
         for (BluetoothDevice entry : peripherals) {
-            Peripheral peripheral = savePeripheral(entry);
+            MyPeripheral peripheral = savePeripheral(entry);
             WritableMap jsonBundle = peripheral.asWritableMap();
             map.pushMap(jsonBundle);
         }
@@ -786,8 +731,7 @@ class BleManager extends ReactContextBaseJavaModule {
         WritableArray map = Arguments.createArray();
         Set<BluetoothDevice> deviceSet = getBluetoothAdapter().getBondedDevices();
         for (BluetoothDevice device : deviceSet) {
-            Peripheral peripheral;
-            peripheral = new Peripheral(device, reactContext);
+            MyPeripheral peripheral = new MyPeripheral(device, reactContext);
             WritableMap jsonBundle = peripheral.asWritableMap();
             map.pushMap(jsonBundle);
         }
@@ -797,37 +741,31 @@ class BleManager extends ReactContextBaseJavaModule {
     @ReactMethod
     public void removePeripheral(String deviceUUID, Callback callback) {
         Log.d(LOG_TAG, "Removing from list: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            synchronized (peripherals) {
-                if (peripheral.isConnected()) {
-                    callback.invoke("Peripheral can not be removed while connected");
-                } else {
-                    peripherals.remove(deviceUUID);
-                    callback.invoke();
-                }
+        synchronized (peripherals) {
+            MyPeripheral peripheral = peripherals.remove(deviceUUID);
+            if (peripheral != null) {
+                peripheral.close();
+                callback.invoke();
+            } else {
+                callback.invoke("Peripheral not found");
             }
-        } else
-            callback.invoke("Peripheral not found");
+        }
     }
 
     @ReactMethod
     public void requestConnectionPriority(String deviceUUID, int connectionPriority, Callback callback) {
         Log.d(LOG_TAG, "Request connection priority of " + connectionPriority + " from: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
-        if (peripheral != null) {
-            peripheral.requestConnectionPriority(connectionPriority, callback);
-        } else {
-            callback.invoke("Peripheral not found", null);
-        }
+        callback.invoke("Not supported");
     }
 
     @ReactMethod
-    public void requestMTU(String deviceUUID, int mtu, Callback callback) {
+    public void requestMTU(String deviceUUID, ReadableMap options, Callback callback) {
+        int mtu = options.getInt("mtu");
+        Integer timeoutMs = getTimeoutMs(options);
         Log.d(LOG_TAG, "Request MTU of " + mtu + " bytes from: " + deviceUUID);
-        Peripheral peripheral = peripherals.get(deviceUUID);
+        MyPeripheral peripheral = retrievePeripheral(deviceUUID);
         if (peripheral != null) {
-            peripheral.requestMTU(mtu, callback);
+            peripheral.requestMTU(mtu, timeoutMs, callback);
         } else {
             callback.invoke("Peripheral not found", null);
         }
@@ -875,6 +813,13 @@ class BleManager extends ReactContextBaseJavaModule {
                 .getCurrentActivity().getSystemService(Context.COMPANION_DEVICE_SERVICE);
     }
 
+    private static @Nullable Integer getTimeoutMs(ReadableMap options) {
+        if (options.hasKey("timeoutMs") && !options.isNull("timeoutMs")) {
+            return options.getInt("timeoutMs");
+        }
+        return null;
+    }
+
     private final static char[] hexArray = "0123456789ABCDEF".toCharArray();
 
     public static String bytesToHex(byte[] bytes) {
@@ -894,22 +839,27 @@ class BleManager extends ReactContextBaseJavaModule {
         return value;
     }
 
+    private MyPeripheral retrievePeripheral(String peripheralUUID) {
+        synchronized (peripherals) {
+            return peripherals.get(peripheralUUID);
+        }
+    }
 
-    private Peripheral retrieveOrCreatePeripheral(String peripheralUUID) {
-        Peripheral peripheral = peripherals.get(peripheralUUID);
-        if (peripheral == null) {
-            synchronized (peripherals) {
+    private MyPeripheral retrieveOrCreatePeripheral(String peripheralUUID) {
+        synchronized (peripherals) {
+            MyPeripheral peripheral = peripherals.get(peripheralUUID);
+            if (peripheral == null) {
                 if (peripheralUUID != null) {
                     peripheralUUID = peripheralUUID.toUpperCase();
                 }
                 if (BluetoothAdapter.checkBluetoothAddress(peripheralUUID)) {
                     BluetoothDevice device = bluetoothAdapter.getRemoteDevice(peripheralUUID);
-                    peripheral = new Peripheral(device, reactContext);
+                    peripheral = new MyPeripheral(device, reactContext);
                     peripherals.put(peripheralUUID, peripheral);
                 }
             }
+            return peripheral;
         }
-        return peripheral;
     }
 
     @ReactMethod
@@ -924,13 +874,7 @@ class BleManager extends ReactContextBaseJavaModule {
 
     @Override
     public void onCatalystInstanceDestroy() {
-        try {
-            // Disconnect all known peripherals, otherwise android system will think we are still connected
-            // while we have lost the gatt instance
-            disconnectPeripherals();
-        } catch (Exception e) {
-            Log.d(LOG_TAG, "Could not disconnect peripherals", e);
-        }
+        clearPeripherals();
 
         if (scanManager != null) {
             // Stop scan in case one was started to stop events from being emitted after destroy

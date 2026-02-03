@@ -80,9 +80,67 @@ export interface ConnectOptions {
    */
   autoconnect?: boolean;
   /**
-   * [android only]
+   * Timeotu in milliseconds. Defaults to none.
+   *
+   * On Android, connection attempts without autoconnect will timeout by the
+   * Android's Bluetooth stack (usually after 30s, but this can vary between
+   * devices / Android versions).
    */
-  phy?: BleScanPhyMode;
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface ReadOptions {
+  service: string;
+  characteristic: string;
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface WriteOptions {
+  service: string;
+  characteristic: string;
+  data: number[];
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface WriteWithoutResponseOptions {
+  service: string;
+  characteristic: string;
+  data: number[];
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface DisconnectOptions {
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface RetrieveServicesOptions {
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface StartNotificationOptions {
+  service: string;
+  characteristic: string;
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface StopNotificationOptions {
+  service: string;
+  characteristic: string;
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
+}
+
+export interface RequestMTUOptions {
+  mtu: number;
+  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
+  timeoutMs?: number | null;
 }
 
 /**
@@ -265,6 +323,14 @@ export enum BleEventType {
    * [iOS only]
    */
   BleManagerDidUpdateNotificationStateFor = "BleManagerDidUpdateNotificationStateFor",
+  /**
+   * [Android only]
+   *
+   * Emitted when a GATT operation fails with an authentication or encryption
+   * error, which typically indicates stale bond keys (e.g. the peripheral
+   * removed its bonding info).
+   */
+  BleManagerAuthorizationError = "BleManagerAuthorizationError",
 }
 
 export interface BleStopScanEvent {
@@ -366,6 +432,23 @@ export interface BleManagerDidUpdateNotificationStateForEvent {
  */
 export interface BleManagerCentralManagerWillRestoreState {
   peripherals: Peripheral[];
+}
+
+/**
+ * [Android only]
+ *
+ * Emitted when a GATT operation fails with an authentication or encryption
+ * error, which typically indicates stale bond keys.
+ */
+export interface BleManagerAuthorizationErrorEvent {
+  /**
+   * peripheral id
+   */
+  readonly peripheral: string;
+  /**
+   * GATT status code (5 = INSUFFICIENT_AUTHENTICATION, 8 = INSUFFICIENT_AUTHORIZATION, 15 = INSUFFICIENT_ENCRYPTION, 137 = AUTH_FAIL)
+   */
+  readonly status: number;
 }
 
 /**
