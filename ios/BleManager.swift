@@ -1,9 +1,8 @@
 import Foundation
 import CoreBluetooth
 
-
 @objc(BleManager)
-class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegate {
+class BleManager: RCTEventEmitter, CBCentralManagerDelegate {
     
     static var shared:BleManager?
     static var sharedManager:CBCentralManager?
@@ -13,22 +12,7 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     private var manager: CBCentralManager?
     private var scanTimer: Timer?
     
-    private var peripherals: Dictionary<String, Peripheral>
-    private var connectCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var readCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var readRSSICallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var readDescriptorCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var writeDescriptorCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var retrieveServicesCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var writeCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var writeQueue: Array<Any>
-    private var notificationCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    private var stopNotificationCallbacks: Dictionary<String, [RCTResponseSenderBlock]>
-    
-    private var connectedPeripherals: Set<String>
-    
-    private var retrieveServicesLatches: Dictionary<String, Set<CBService>>
-    private var characteristicsLatches: Dictionary<String, Set<CBCharacteristic>>
+    private var peripherals: Mutex<Dictionary<String, Peripheral>> = Mutex([:])
     
     private let serialQueue = DispatchQueue(label: "BleManager.serialQueue")
     
@@ -37,21 +21,7 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     static var verboseLogging = false
     
     private override init() {
-        peripherals = [:]
-        connectCallbacks = [:]
-        readCallbacks = [:]
-        readRSSICallbacks = [:]
-        readDescriptorCallbacks = [:]
-        writeDescriptorCallbacks = [:]
-        retrieveServicesCallbacks = [:]
-        writeCallbacks = [:]
-        writeQueue = []
-        notificationCallbacks = [:]
-        stopNotificationCallbacks = [:]
-        retrieveServicesLatches = [:]
-        characteristicsLatches = [:]
         exactAdvertisingName = []
-        connectedPeripherals = []
         
         super.init()
         
@@ -66,7 +36,7 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     @objc override static func requiresMainQueueSetup() -> Bool { return true }
     
     @objc override func supportedEvents() -> [String]! {
-        return ["BleManagerDidUpdateValueForCharacteristic", "BleManagerStopScan", "BleManagerDiscoverPeripheral", "BleManagerConnectPeripheral", "BleManagerDisconnectPeripheral", "BleManagerDidUpdateState", "BleManagerCentralManagerWillRestoreState", "BleManagerDidUpdateNotificationStateFor"]
+        return ["BleManagerDidUpdateValueForCharacteristic", "BleManagerStopScan", "BleManagerDiscoverPeripheral", "BleManagerConnectPeripheral", "BleManagerDisconnectPeripheral", "BleManagerDidUpdateState", "BleManagerDidUpdateNotificationStateFor", "BleManagerAuthorizationError"]
     }
     
     @objc override func startObserving() {
@@ -88,103 +58,14 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
             manager.delegate = nil
         }
         
-        serialQueue.sync {
+        peripherals.withLock { peripherals in
             for p in peripherals.values {
-                p.instance.delegate = nil
-            }
-        }
-        
-        peripherals = [:]
-    }
-    
-    // Helper method to find a peripheral by UUID
-    func findPeripheral(byUUID uuid: String) -> Peripheral? {
-        var foundPeripheral: Peripheral? = nil
-        
-        serialQueue.sync {
-            if let peripheral = peripherals[uuid] {
-                foundPeripheral = peripheral;
-            }
-        }
-        
-        return foundPeripheral
-    }
-    
-    // Helper method to insert callback in different queues
-    func insertCallback(_ callback: @escaping RCTResponseSenderBlock, intoDictionary dictionary: inout Dictionary<String, [RCTResponseSenderBlock]>, withKey key: String) {
-        serialQueue.sync {
-            var peripheralCallbacks = dictionary[key] ?? [RCTResponseSenderBlock]()
-            peripheralCallbacks.append(callback)
-            dictionary[key] = peripheralCallbacks
-        }
-    }
-    
-    // Helper method to call the callbacks for a specific peripheral and clear the queue
-    func invokeAndClearDictionary(_ dictionary: inout Dictionary<String, [RCTResponseSenderBlock]>, withKey key: String, usingParameters parameters: [Any]) {
-        serialQueue.sync {
-            invokeAndClearDictionary_THREAD_UNSAFE(&dictionary, withKey: key, usingParameters: parameters)
-        }
-    }
-
-    func invokeAndClearDictionary_THREAD_UNSAFE(_ dictionary: inout Dictionary<String, [RCTResponseSenderBlock]>, withKey key: String, usingParameters parameters: [Any]) {
-        if let peripheralCallbacks = dictionary[key] {
-            for callback in peripheralCallbacks {
-                callback(parameters)
+                p.close()
             }
             
-            dictionary.removeValue(forKey: key)
+            peripherals.removeAll()
         }
     }
-    
-    @objc func getContext(_ peripheralUUIDString: String, serviceUUIDString: String, characteristicUUIDString: String, prop: CBCharacteristicProperties, callback: @escaping RCTResponseSenderBlock) -> BLECommandContext? {
-        let serviceUUID = CBUUID(string: serviceUUIDString)
-        let characteristicUUID = CBUUID(string: characteristicUUIDString)
-        
-        guard let peripheral = peripherals[peripheralUUIDString] else {
-            let error = String(format: "Could not find peripheral with UUID %@", peripheralUUIDString)
-            NSLog(error)
-            callback([error])
-            return nil
-        }
-        
-        guard let service = Helper.findService(fromUUID: serviceUUID, peripheral: peripheral.instance) else {
-            let error = String(format: "Could not find service with UUID %@ on peripheral with UUID %@",
-                               serviceUUIDString,
-                               peripheral.instance.uuidAsString())
-            NSLog(error)
-            callback([error])
-            return nil
-        }
-        
-        var characteristic = Helper.findCharacteristic(fromUUID: characteristicUUID, service: service, prop: prop)
-        
-        // Special handling for INDICATE. If characteristic with notify is not found, check for indicate.
-        if prop == CBCharacteristicProperties.notify && characteristic == nil {
-            characteristic = Helper.findCharacteristic(fromUUID: characteristicUUID, service: service, prop: CBCharacteristicProperties.indicate)
-        }
-        
-        // As a last resort, try to find ANY characteristic with this UUID, even if it doesn't have the correct properties
-        if characteristic == nil {
-            characteristic = Helper.findCharacteristic(fromUUID: characteristicUUID, service: service)
-        }
-        
-        guard let finalCharacteristic = characteristic else {
-            let error = String(format: "Could not find characteristic with UUID %@ on service with UUID %@ on peripheral with UUID %@",
-                               characteristicUUIDString,
-                               serviceUUIDString,
-                               peripheral.instance.uuidAsString())
-            NSLog(error)
-            callback([error])
-            return nil
-        }
-        
-        let context = BLECommandContext()
-        context.peripheral = peripheral
-        context.service = service
-        context.characteristic = finalCharacteristic
-        return context
-    }
-    
     
     @objc public func start(_ options: NSDictionary,
                             callback: RCTResponseSenderBlock) {
@@ -240,10 +121,13 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
         // Clear the peripherals before scanning again, otherwise cannot connect again after disconnection
         // Only clear peripherals that are not connected - otherwise connections fail silently (without any
         // onDisconnect* callback).
-        serialQueue.sync {
-            let disconnectedPeripherals = peripherals.filter({ $0.value.instance.state != .connected && $0.value.instance.state != .connecting })
+        // TODO(ville): Figure out what is correct here.
+        peripherals.withLock { peripherals in
+            let disconnectedPeripherals = peripherals.filter({
+                $0.value.state() != .connected
+                && $0.value.state() != .connecting })
             disconnectedPeripherals.forEach { (uuid, peripheral) in
-                peripheral.instance.delegate = nil
+                peripheral.close()
                 peripherals.removeValue(forKey: uuid)
             }
         }
@@ -308,103 +192,95 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
                        options: NSDictionary,
                        callback: @escaping RCTResponseSenderBlock) {
         
-        if let peripheral = peripherals[peripheralUUID] {
-            // Found the peripheral, connect to it
-            NSLog("Connecting to peripheral with UUID: \(peripheralUUID)")
-            
-            insertCallback(callback, intoDictionary: &connectCallbacks, withKey: peripheral.instance.uuidAsString())
-            manager?.connect(peripheral.instance)
-        } else {
-            // Try to retrieve the peripheral
-            NSLog("Retrieving peripheral with UUID: \(peripheralUUID)")
-            
-            if let uuid = UUID(uuidString: peripheralUUID) {
-                let peripheralArray = manager?.retrievePeripherals(withIdentifiers: [uuid])
-                if let retrievedPeripheral = peripheralArray?.first {
-                    serialQueue.sync {
-                        peripherals[retrievedPeripheral.uuidAsString()] = Peripheral(peripheral:retrievedPeripheral)
-                    }
-                    NSLog("Successfully retrieved and connecting to peripheral with UUID: \(peripheralUUID)")
-                    
-                    // Connect to the retrieved peripheral
-                    insertCallback(callback, intoDictionary: &connectCallbacks, withKey: retrievedPeripheral.uuidAsString())
-                    manager?.connect(retrievedPeripheral, options: nil)
-                } else {
+        peripherals.withLock { peripherals in
+            if peripherals[peripheralUUID] == nil {
+                guard let uuid = UUID(uuidString: peripheralUUID) else {
                     let error = "Could not find peripheral \(peripheralUUID)."
                     NSLog(error)
                     callback([error, NSNull()])
+                    return
                 }
-            } else {
-                let error = "Wrong UUID format \(peripheralUUID)"
-                callback([error, NSNull()])
+                
+                guard let p = manager?.retrievePeripherals(withIdentifiers: [uuid]).first else {
+                    let error = "Could not find peripheral \(peripheralUUID)."
+                    NSLog(error)
+                    callback([error, NSNull()])
+                    return
+                }
+                
+                let peripheral = createPeripheral(from: p)
+                peripherals[p.uuidAsString()] = peripheral
+                // NOTE(ville): connect call to already connected peripheral
+                // wont cause us to emit the "peripheral connected" event. We'll
+                // have to work around that. Do this by signaling the manager's
+                // state to the peripheral if the peripheral is already connected.
+                if p.state == .connected && manager != nil {
+                    peripheral.didUpdateState(state: manager!.state)
+                }
             }
+            
+            let p = peripherals[peripheralUUID]!
+            let timeoutMs = options["timeoutMs"] as? NSNumber
+            p.connect(timeoutMs: timeoutMs, callback: callback)
         }
     }
     
-    @objc func disconnect(_ peripheralUUID: String,
-                          force: Bool,
-                          callback: @escaping RCTResponseSenderBlock) {
-        if let peripheral = peripherals[peripheralUUID] {
-            NSLog("Disconnecting from peripheral with UUID: \(peripheralUUID)")
-            
-            if let services = peripheral.instance.services {
-                for service in services {
-                    if let characteristics = service.characteristics {
-                        for characteristic in characteristics {
-                            if characteristic.isNotifying {
-                                NSLog("Remove notification from: \(characteristic.uuid)")
-                                peripheral.instance.setNotifyValue(false, for: characteristic)
-                            }
-                        }
-                    }
+    private func createPeripheral(
+        from peripheral: CBPeripheral,
+        rssi: NSNumber? = nil,
+        adverisementData: Dictionary<String, Any> = [:]
+    ) -> Peripheral {
+        return Peripheral(
+            peripheral: peripheral,
+            rssi: rssi,
+            advertisementData: adverisementData,
+            connect: { [weak self] in self?.manager?.connect(peripheral) },
+            disconnect: { [weak self] in self?.manager?.cancelPeripheralConnection(peripheral) },
+            sendEvent: { [weak self] (event, body) -> Void in
+                if self?.hasListeners == true {
+                    self?.sendEvent(withName: event, body: body)
                 }
             }
-            
-            manager?.cancelPeripheralConnection(peripheral.instance)
-            callback([])
-            
-        } else {
-            let error = "Could not find peripheral \(peripheralUUID)."
-            NSLog(error)
-            callback([error])
+        )
+    }
+    
+    @objc func disconnect(_ peripheralUUID: String,
+                          options: NSDictionary,
+                          callback: @escaping RCTResponseSenderBlock) {
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                let error = "Could not find peripheral \(peripheralUUID)."
+                NSLog(error)
+                callback([error])
+                return
+            }
+
+            peripheral.disconnect(timeoutMs: timeoutMs, callback: callback)
         }
     }
     
     @objc func retrieveServices(_ peripheralUUID: String,
-                                services: [String],
+                                options: NSDictionary,
                                 callback: @escaping RCTResponseSenderBlock) {
-        NSLog("retrieveServices \(services)")
-        
-        if let peripheral = peripherals[peripheralUUID], peripheral.instance.state == .connected {
-            insertCallback(callback, intoDictionary: &retrieveServicesCallbacks, withKey: peripheral.instance.uuidAsString())
-            
-            var uuids: [CBUUID] = []
-            for string in services {
-                let uuid = CBUUID(string: string)
-                uuids.append(uuid)
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+        NSLog("retrieveServices")
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                callback(["Peripheral not found"])
+                return
             }
-            
-            if !uuids.isEmpty {
-                peripheral.instance.discoverServices(uuids)
-            } else {
-                peripheral.instance.discoverServices(nil)
-            }
-            
-        } else {
-            callback(["Peripheral not found or not connected"])
+
+            peripheral.discoverServices(timeoutMs: timeoutMs, callback: callback)
         }
     }
     
     @objc func readRSSI(_ peripheralUUID: String,
                         callback: @escaping RCTResponseSenderBlock) {
         NSLog("readRSSI")
-        
-        if let peripheral = peripherals[peripheralUUID], peripheral.instance.state == .connected {
-            insertCallback(callback, intoDictionary: &readRSSICallbacks, withKey: peripheral.instance.uuidAsString())
-            peripheral.instance.readRSSI()
-        } else {
-            callback(["Peripheral not found or not connected"])
-        }
+        callback(["Not supported"])
     }
     
     @objc func readDescriptor(_ peripheralUUID: String,
@@ -413,28 +289,7 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
                               descriptorUUID: String,
                               callback: @escaping RCTResponseSenderBlock) {
         NSLog("readDescriptor")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.read, callback: callback) else {
-            return
-        }
-        
-        let peripheral = context.peripheral
-        let characteristic = context.characteristic
-        
-        guard let descriptor = Helper.findDescriptor(fromUUID: CBUUID(string: descriptorUUID), characteristic: characteristic!) else {
-            let error = "Could not find descriptor with UUID \(descriptorUUID) on characteristic with UUID \(String(describing: characteristic?.uuid.uuidString)) on peripheral with UUID \(peripheralUUID)"
-            NSLog(error)
-            callback([error])
-            return
-        }
-        
-        if let peripheral = peripheral?.instance {
-            let key = Helper.key(forPeripheral: peripheral, andCharacteristic: characteristic!, andDescriptor: descriptor)
-            insertCallback(callback, intoDictionary: &readDescriptorCallbacks, withKey: key)
-            
-        }
-        
-        peripheral?.instance.readValue(for: descriptor)
+        callback(["Not supported"])
     }
     
     @objc func writeDescriptor(_ peripheralUUID: String,
@@ -444,91 +299,36 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
                               message: [UInt8],
                               callback: @escaping RCTResponseSenderBlock) {
         NSLog("writeDescriptor")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.read, callback: callback) else {
-            return
-        }
-        
-        let peripheral = context.peripheral
-        let characteristic = context.characteristic
-        
-        guard let descriptor = Helper.findDescriptor(fromUUID: CBUUID(string: descriptorUUID), characteristic: characteristic!) else {
-            let error = "Could not find descriptor with UUID \(descriptorUUID) on characteristic with UUID \(String(describing: characteristic?.uuid.uuidString)) on peripheral with UUID \(peripheralUUID)"
-            NSLog(error)
-            callback([error])
-            return
-        }
-        
-        if let peripheral = peripheral?.instance {
-            let key = Helper.key(forPeripheral: peripheral, andCharacteristic: characteristic!, andDescriptor: descriptor)
-            insertCallback(callback, intoDictionary: &writeDescriptorCallbacks, withKey: key)
-            
-        }
-        
-        let dataMessage = Data(message)
-        peripheral?.instance.writeValue(dataMessage, for: descriptor)
+        callback(["Not supported"])
     }
     
     @objc func getDiscoveredPeripherals(_ callback: @escaping RCTResponseSenderBlock) {
         NSLog("Get discovered peripherals")
-        var discoveredPeripherals: [[String: Any]] = []
-        
-        serialQueue.sync {
+        peripherals.withLock { peripherals in
+            var discoveredPeripherals: [[String: Any]] = []
+            
             for (_, peripheral) in peripherals {
                 discoveredPeripherals.append(peripheral.advertisingInfo())
             }
+            
+            callback([NSNull(), discoveredPeripherals])
         }
-        
-        callback([NSNull(), discoveredPeripherals])
     }
     
     @objc func getConnectedPeripherals(_ serviceUUIDStrings: [String],
                                        callback: @escaping RCTResponseSenderBlock) {
         NSLog("Get connected peripherals")
-        var serviceUUIDs: [CBUUID] = []
-        
-        for uuidString in serviceUUIDStrings {
-            serviceUUIDs.append(CBUUID(string: uuidString))
-        }
-        
-        var connectedPeripherals: [Peripheral] = []
-        
-        if serviceUUIDs.isEmpty {
-            serialQueue.sync {
-                connectedPeripherals = peripherals.filter({ $0.value.instance.state == .connected }).map({ p in
-                    p.value
-                })
-            }
-        } else {
-            let connectedCBPeripherals: [CBPeripheral] = manager?.retrieveConnectedPeripherals(withServices: serviceUUIDs) ?? []
-            
-            serialQueue.sync {
-                for ph in connectedCBPeripherals {
-                    if let peripheral = peripherals[ph.uuidAsString()] {
-                        connectedPeripherals.append(peripheral)
-                    } else {
-                        peripherals[ph.uuidAsString()] = Peripheral(peripheral: ph)
-                    }
-                }
-            }
-        }
-        
-        var foundedPeripherals: [[String: Any]] = []
-        
-        for peripheral in connectedPeripherals {
-            foundedPeripherals.append(peripheral.advertisingInfo())
-        }
-        
-        callback([NSNull(), foundedPeripherals])
+        callback([NSNull(), []])
     }
     
     @objc func isPeripheralConnected(_ peripheralUUID: String,
                                      callback: @escaping RCTResponseSenderBlock) {
-        
-        if let peripheral = peripherals[peripheralUUID] {
-            callback([NSNull(), peripheral.instance.state == .connected])
-        } else {
-            callback(["Peripheral not found"])
+        peripherals.withLock { peripherals in
+            if let peripheral = peripherals[peripheralUUID] {
+                callback([NSNull(), peripheral.state() == .connected])
+            } else {
+                callback(["Peripheral not found"])
+            }
         }
     }
     
@@ -550,208 +350,139 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     }
     
     @objc func write(_ peripheralUUID: String,
-                     serviceUUID: String,
-                     characteristicUUID: String,
-                     message: [UInt8],
-                     maxByteSize: Int,
+                     options: NSDictionary,
                      callback: @escaping RCTResponseSenderBlock) {
         NSLog("write")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.write, callback: callback) else {
+
+        guard let serviceUUID = options["service"] as? String,
+              let characteristicUUID = options["characteristic"] as? String else {
+            callback(["service and characteristic required."])
             return
         }
-        
-        let dataMessage = Data(message)
-        
-        if let peripheral = context.peripheral, let characteristic = context.characteristic {
-            let key = Helper.key(forPeripheral:peripheral.instance, andCharacteristic: characteristic)
-            insertCallback(callback, intoDictionary: &writeCallbacks, withKey: key)
-            
-            if BleManager.verboseLogging {
-                NSLog("Message to write(\(dataMessage.count)): \(dataMessage.hexadecimalString())")
+        guard let data = options["data"] as? [UInt8] else {
+            callback(["data required."])
+            return
+        }
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                callback(["Peripheral not found"])
+                return
             }
-            
-            if dataMessage.count > maxByteSize {
-                var count = 0
-                var offset = 0
-                while count < dataMessage.count, (dataMessage.count - count) > maxByteSize {
-                    let splitMessage = dataMessage.subdata(in: offset..<offset + maxByteSize)
-                    writeQueue.append(splitMessage)
-                    count += maxByteSize
-                    offset += maxByteSize
-                }
-                
-                if count < dataMessage.count {
-                    let splitMessage = dataMessage.subdata(in: offset..<dataMessage.count)
-                    writeQueue.append(splitMessage)
-                }
-                
-                if BleManager.verboseLogging {
-                    NSLog("Queued splitted message: \(writeQueue.count)")
-                }
-                
-                if case let firstMessage as Data = writeQueue.removeFirst() {
-                    peripheral.instance.writeValue(firstMessage, for: characteristic, type: .withResponse)
-                }
-            } else {
-                peripheral.instance.writeValue(dataMessage, for: characteristic, type: .withResponse)
-            }
+
+            peripheral.write(service: CBUUID(string: serviceUUID),
+                             characteristic: CBUUID(string: characteristicUUID),
+                             value: data,
+                             timeoutMs: timeoutMs,
+                             callback: callback)
         }
     }
-    
+
     @objc func writeWithoutResponse(_ peripheralUUID: String,
-                                    serviceUUID: String,
-                                    characteristicUUID: String,
-                                    message: [UInt8],
-                                    maxByteSize: Int,
-                                    queueSleepTime: Int,
+                                    options: NSDictionary,
                                     callback: @escaping RCTResponseSenderBlock) {
         NSLog("writeWithoutResponse")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.writeWithoutResponse, callback: callback) else {
-            return
-        }
-        
-        let dataMessage = Data(message)
-        
-        if BleManager.verboseLogging {
-            NSLog("Message to write(\(dataMessage.count)): \(dataMessage.hexadecimalString())")
-        }
-        
-        if dataMessage.count > maxByteSize {
-            var offset = 0
-            let peripheral = context.peripheral
-            guard let characteristic = context.characteristic else { return }
-            
-            repeat {
-                let thisChunkSize = min(maxByteSize, dataMessage.count - offset)
-                let chunk = dataMessage.subdata(in: offset..<offset + thisChunkSize)
-                
-                offset += thisChunkSize
-                peripheral?.instance.writeValue(chunk, for: characteristic, type: .withoutResponse)
-                
-                let sleepTimeSeconds = TimeInterval(queueSleepTime) / 1000
-                Thread.sleep(forTimeInterval: sleepTimeSeconds)
-            } while offset < dataMessage.count
-            
-            callback([])
-        } else {
-            let peripheral = context.peripheral
-            guard let characteristic = context.characteristic else { return }
-            
-            peripheral?.instance.writeValue(dataMessage, for: characteristic, type: .withoutResponse)
-            callback([])
-        }
+        callback(["Not supported"])
     }
     
     @objc func read(_ peripheralUUID: String,
-                    serviceUUID: String,
-                    characteristicUUID: String,
+                    options: NSDictionary,
                     callback: @escaping RCTResponseSenderBlock) {
         NSLog("read")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.read, callback: callback) else {
+
+        guard let serviceUUID = options["service"] as? String,
+              let characteristicUUID = options["characteristic"] as? String else {
+            callback(["service and characteristic required."])
             return
         }
-        
-        let peripheral = context.peripheral
-        let characteristic = context.characteristic
-        
-        let key = Helper.key(forPeripheral:peripheral!.instance as CBPeripheral, andCharacteristic: characteristic!)
-        insertCallback(callback, intoDictionary: &readCallbacks, withKey: key)
-        
-        peripheral?.instance.readValue(for: characteristic!)  // callback sends value
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                callback(["Peripheral not found"])
+                return
+            }
+
+            peripheral.read(service: CBUUID(string: serviceUUID),
+                            characteristic: CBUUID(string: characteristicUUID),
+                            timeoutMs: timeoutMs,
+                            callback: callback)
+        }
     }
     
     @objc func startNotification(_ peripheralUUID: String,
-                                 serviceUUID: String,
-                                 characteristicUUID: String,
+                                 options: NSDictionary,
                                  callback: @escaping RCTResponseSenderBlock) {
         NSLog("startNotification")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.notify, callback: callback) else {
+
+        guard let serviceUUID = options["service"] as? String,
+              let characteristicUUID = options["characteristic"] as? String else {
+            callback(["service and characteristic required."])
             return
         }
-        
-        guard let peripheral = context.peripheral else { return }
-        guard let characteristic = context.characteristic else { return }
-        
-        let key = Helper.key(forPeripheral: (peripheral.instance as CBPeripheral?)!, andCharacteristic: characteristic)
-        insertCallback(callback, intoDictionary: &notificationCallbacks, withKey: key)
-        
-        peripheral.instance.setNotifyValue(true, for: characteristic)
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                callback(["Peripheral not found"])
+                return
+            }
+
+            peripheral.startNotifications(service: CBUUID(string: serviceUUID),
+                                          characteristic: CBUUID(string: characteristicUUID),
+                                          timeoutMs: timeoutMs,
+                                          callback: callback)
+        }
     }
     
     @objc func stopNotification(_ peripheralUUID: String,
-                                serviceUUID: String,
-                                characteristicUUID: String,
+                                options: NSDictionary,
                                 callback: @escaping RCTResponseSenderBlock) {
         NSLog("stopNotification")
-        
-        guard let context = getContext(peripheralUUID, serviceUUIDString: serviceUUID, characteristicUUIDString: characteristicUUID, prop: CBCharacteristicProperties.notify, callback: callback) else {
+
+        guard let serviceUUID = options["service"] as? String,
+              let characteristicUUID = options["characteristic"] as? String else {
+            callback(["service and characteristic required."])
             return
         }
-        
-        let peripheral = context.peripheral
-        guard let characteristic = context.characteristic else { return }
-        
-        if characteristic.isNotifying {
-            let key = Helper.key(forPeripheral: (peripheral?.instance as CBPeripheral?)!, andCharacteristic: characteristic)
-            insertCallback(callback, intoDictionary: &stopNotificationCallbacks, withKey: key)
-            peripheral?.instance.setNotifyValue(false, for: characteristic)
-            NSLog("Characteristic stopped notifying")
-        } else {
-            NSLog("Characteristic is not notifying")
-            callback([])
+        let timeoutMs = options["timeoutMs"] as? NSNumber
+
+        peripherals.withLock { peripherals in
+            guard let peripheral = peripherals[peripheralUUID] else {
+                callback(["Peripheral not found"])
+                return
+            }
+
+            peripheral.stopNotifications(service: CBUUID(string: serviceUUID),
+                                         characteristic: CBUUID(string: characteristicUUID),
+                                         timeoutMs: timeoutMs,
+                                         callback: callback)
         }
     }
     
     @objc func getMaximumWriteValueLengthForWithoutResponse(_ peripheralUUID: String,
                                                             callback: @escaping RCTResponseSenderBlock) {
         NSLog("getMaximumWriteValueLengthForWithoutResponse")
-        
-        guard let peripheral = peripherals[peripheralUUID] else {
-            callback(["Peripheral not found or not connected"])
-            return
-        }
-        
-        if peripheral.instance.state == .connected {
-            let max = NSNumber(value: peripheral.instance.maximumWriteValueLength(for: .withoutResponse))
-            callback([NSNull(), max])
-        } else {
-            callback(["Peripheral not found or not connected"])
-        }
+        callback(["Not supported"])
     }
     
     @objc func getMaximumWriteValueLengthForWithResponse(_ peripheralUUID: String,
                                                          callback: @escaping RCTResponseSenderBlock) {
         NSLog("getMaximumWriteValueLengthForWithResponse")
-        
-        guard let peripheral = peripherals[peripheralUUID] else {
-            callback(["Peripheral not found or not connected"])
-            return
-        }
-        
-        if peripheral.instance.state == .connected {
-            let max = NSNumber(value: peripheral.instance.maximumWriteValueLength(for: .withResponse))
-            callback([NSNull(), max])
-        } else {
-            callback(["Peripheral not found or not connected"])
-        }
+        callback(["Not supported"])
     }
     
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        NSLog("willRestoreState")
         if let restoredPeripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], restoredPeripherals.count > 0 {
-            serialQueue.sync {
+            peripherals.withLock { peripherals in
                 var data = [[String: Any]]()
                 for peripheral in restoredPeripherals {
-                    let p = Peripheral(peripheral:peripheral)
+                    let p = createPeripheral(from: peripheral)
                     peripherals[peripheral.uuidAsString()] = p
                     data.append(p.advertisingInfo())
-                    peripheral.delegate = self
                 }
-                
-                self.sendEvent(withName:"BleManagerCentralManagerWillRestoreState", body: ["peripherals": data])
             }
         }
     }
@@ -760,23 +491,13 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     func centralManager(_ central: CBCentralManager,
                         didConnect peripheral: CBPeripheral) {
         NSLog("Peripheral Connected: \(peripheral.uuidAsString() )")
-        peripheral.delegate = self
-        
-        /*
-         The state of the peripheral isn't necessarily updated until a small
-         delay after didConnectPeripheral is called and in the meantime
-         didFailToConnectPeripheral may be called
-         */
-        DispatchQueue.main.async {
-            Timer.scheduledTimer(withTimeInterval: 0.002, repeats: false) { timer in
-                // didFailToConnectPeripheral should have been called already if not connected by now
-                self.invokeAndClearDictionary(&self.connectCallbacks, withKey: peripheral.uuidAsString(), usingParameters: [NSNull()])
-                
-                if self.hasListeners {
-                    self.connectedPeripherals.insert(peripheral.uuidAsString())
-                    self.sendEvent(withName: "BleManagerConnectPeripheral", body: ["peripheral": peripheral.uuidAsString()])
-                }
+        peripherals.withLock { peripherals in
+            guard let p = peripherals[peripheral.uuidAsString()] else {
+                NSLog("Unknown peripheral connected!")
+                return
             }
+            
+            p.peripheralDidConnect()
         }
     }
     
@@ -786,7 +507,14 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
         let errorStr = "Peripheral connection failure: \(peripheral.uuidAsString() ) (\(error?.localizedDescription ?? "")"
         NSLog(errorStr)
         
-        invokeAndClearDictionary(&connectCallbacks, withKey: peripheral.uuidAsString(), usingParameters: [errorStr])
+        peripherals.withLock { peripherals in
+            guard let p = peripherals[peripheral.uuidAsString()] else {
+                NSLog("Unknown peripheral connect failure!")
+                return
+            }
+            
+            p.peripheralDidFailToConnect(error: error)
+        }
     }
     
     func centralManager(_ central: CBCentralManager,
@@ -799,67 +527,26 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
             NSLog("Error: \(error)")
         }
         
-        let errorStr = "Peripheral did disconnect: \(peripheralUUIDString)"
         
-        invokeAndClearDictionary(&connectCallbacks, withKey: peripheralUUIDString, usingParameters: [errorStr])
-        invokeAndClearDictionary(&readRSSICallbacks, withKey: peripheralUUIDString, usingParameters: [errorStr])
-        invokeAndClearDictionary(&retrieveServicesCallbacks, withKey: peripheralUUIDString, usingParameters: [errorStr])
-        
-        
-        for key in readCallbacks.keys {
-            if let keyString = key as String?, keyString.hasPrefix(peripheralUUIDString) {
-                invokeAndClearDictionary(&readCallbacks, withKey: key, usingParameters: [errorStr])
+        peripherals.withLock { peripherals in
+            guard let p = peripherals[peripheral.uuidAsString()] else {
+                NSLog("Unknown peripheral disconnect!")
+                return
             }
-        }
-        
-        for key in writeCallbacks.keys {
-            if let keyString = key as String?, keyString.hasPrefix(peripheralUUIDString) {
-                invokeAndClearDictionary(&writeCallbacks, withKey: key, usingParameters: [errorStr])
-            }
-        }
-        
-        for key in notificationCallbacks.keys {
-            if let keyString = key as String?, keyString.hasPrefix(peripheralUUIDString) {
-                invokeAndClearDictionary(&notificationCallbacks, withKey: key, usingParameters: [errorStr])
-            }
-        }
-        
-        for key in readDescriptorCallbacks.keys {
-            if let keyString = key as String?, keyString.hasPrefix(peripheralUUIDString) {
-                invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [errorStr])
-            }
-        }
-        
-        for key in stopNotificationCallbacks.keys {
-            if let keyString = key as String?, keyString.hasPrefix(peripheralUUIDString) {
-                invokeAndClearDictionary(&stopNotificationCallbacks, withKey: key, usingParameters: [errorStr])
-            }
-        }
-        
-        if hasListeners {
-            connectedPeripherals.remove(peripheralUUIDString)
-            if let e:Error = error {
-                sendEvent(withName: "BleManagerDisconnectPeripheral", body: ["peripheral": peripheralUUIDString, "domain": e._domain, "code": e._code, "description": e.localizedDescription])
-            } else {
-                sendEvent(withName: "BleManagerDisconnectPeripheral", body: ["peripheral": peripheralUUIDString])
-            }
+            
+            p.peripheralDidDisconnect(error: error)
         }
     }
-    
     
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         let stateName = Helper.centralManagerStateToString(central.state)
         if hasListeners {
             sendEvent(withName: "BleManagerDidUpdateState", body: ["state": stateName])
         }
-        if stateName == "off" {
-            for peripheralUUID in connectedPeripherals {
-                if let peripheral = peripherals[peripheralUUID] {
-                    if peripheral.instance.state == .disconnected {
-                        self.centralManager(manager!, didDisconnectPeripheral:peripheral.instance, error: nil)
-                    }
-                }
-            }
+        
+        // Signal the peripherals for updated their state.
+        peripherals.withLock { peripherals in
+            peripherals.values.forEach { $0.didUpdateState(state: central.state) }
         }
     }
     
@@ -870,20 +557,21 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
             NSLog("Discover peripheral: \(peripheral.name ?? "NO NAME")");
         }
         
-        var cp: Peripheral? = nil
-        serialQueue.sync {
-            if let p = peripherals[peripheral.uuidAsString()] {
-                cp = p
-                cp?.setRSSI(rssi)
-                cp?.setAdvertisementData(advertisementData)
+        peripherals.withLock { peripherals in
+            let uuid = peripheral.uuidAsString()
+            if peripherals[uuid] == nil {
+                peripherals[uuid] = createPeripheral(
+                    from: peripheral,
+                    rssi: rssi,
+                    adverisementData: advertisementData)
             } else {
-                cp = Peripheral(peripheral:peripheral, rssi:rssi, advertisementData:advertisementData)
-                peripherals[peripheral.uuidAsString()] = cp
+                peripherals[uuid]!.setAdvertisingInfo(rssi: rssi, data: advertisementData)
             }
-        }
-        
-        if (hasListeners) {
-            sendEvent(withName: "BleManagerDiscoverPeripheral", body: cp?.advertisingInfo())
+            
+            if (hasListeners) {
+                sendEvent(withName: "BleManagerDiscoverPeripheral",
+                          body: peripherals[uuid]!.advertisingInfo())
+            }
         }
     }
     
@@ -909,289 +597,6 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
         
         
     }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didDiscoverServices error: Error?) {
-        if let error = error {
-            NSLog("Error: \(error)")
-            return
-        }
-        if BleManager.verboseLogging {
-            NSLog("Services Discover")
-        }
-        
-        var servicesForPeripheral = Set<CBService>()
-        servicesForPeripheral.formUnion(peripheral.services ?? [])
-        retrieveServicesLatches[peripheral.uuidAsString()] = servicesForPeripheral
-        
-        if let services = peripheral.services {
-            for service in services {
-                if BleManager.verboseLogging {
-                    NSLog("Service \(service.uuid.uuidString) \(service.description)")
-                }
-                peripheral.discoverIncludedServices(nil, for: service) // discover included services
-                peripheral.discoverCharacteristics(nil, for: service) // discover characteristics for service
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didDiscoverIncludedServicesFor service: CBService,
-                    error: Error?) {
-        if let error = error {
-            NSLog("Error: \(error)")
-            return
-        }
-        peripheral.discoverCharacteristics(nil, for: service) // discover characteristics for included service
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didDiscoverCharacteristicsFor service: CBService,
-                    error: Error?) {
-        if let error = error {
-            NSLog("Error: \(error)")
-            return
-        }
-        if BleManager.verboseLogging {
-            NSLog("Characteristics For Service Discover")
-        }
-        
-        var characteristicsForService = Set<CBCharacteristic>()
-        characteristicsForService.formUnion(service.characteristics ?? [])
-        characteristicsLatches[service.uuid.uuidString] = characteristicsForService
-        
-        if let characteristics = service.characteristics {
-            for characteristic in characteristics {
-                peripheral.discoverDescriptors(for: characteristic)
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didDiscoverDescriptorsFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        if let error = error {
-            NSLog("Error: \(error)")
-            return
-        }
-        let peripheralUUIDString:String = peripheral.uuidAsString()
-        let serviceUUIDString:String = (characteristic.service?.uuid.uuidString)!
-        
-        if BleManager.verboseLogging {
-            NSLog("Descriptor For Characteristic Discover \(serviceUUIDString) \(characteristic.uuid.uuidString)")
-        }
-        
-        if var servicesLatch = retrieveServicesLatches[peripheralUUIDString], var characteristicsLatch = characteristicsLatches[serviceUUIDString] {
-            
-            characteristicsLatch.remove(characteristic)
-            characteristicsLatches[serviceUUIDString] = characteristicsLatch
-            
-            if characteristicsLatch.isEmpty {
-                // All characteristics for this service have been checked
-                servicesLatch.remove(characteristic.service!)
-                retrieveServicesLatches[peripheralUUIDString] = servicesLatch
-                
-                if servicesLatch.isEmpty {
-                    // All characteristics and services have been checked
-                    if let peripheral = peripherals[peripheral.uuidAsString()] {
-                        invokeAndClearDictionary(&retrieveServicesCallbacks, withKey: peripheralUUIDString, usingParameters: [NSNull(), peripheral.servicesInfo()])
-                    }
-                    characteristicsLatches.removeValue(forKey: serviceUUIDString)
-                    retrieveServicesLatches.removeValue(forKey: peripheralUUIDString)
-                }
-            }
-            
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didReadRSSI RSSI: NSNumber,
-                    error: Error?) {
-        if BleManager.verboseLogging {
-            print("didReadRSSI \(RSSI)")
-        }
-        
-        if let error = error {
-            invokeAndClearDictionary(&readRSSICallbacks, withKey: peripheral.uuidAsString(), usingParameters: [error.localizedDescription, RSSI])
-        } else {
-            invokeAndClearDictionary(&readRSSICallbacks, withKey: peripheral.uuidAsString(), usingParameters: [NSNull(), RSSI])
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didUpdateValueFor descriptor: CBDescriptor,
-                    error: Error?) {
-        let key = Helper.key(forPeripheral: peripheral, andCharacteristic: descriptor.characteristic!, andDescriptor: descriptor)
-        
-        if let error = error {
-            NSLog("Error reading descriptor value for \(descriptor.uuid) on characteristic \(descriptor.characteristic!.uuid) :\(error)")
-            invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [error.localizedDescription, NSNull()])
-            return
-        }
-        
-        if let descriptorValue = descriptor.value as? Data {
-            NSLog("Read value [descriptor: \(descriptor.uuid), characteristic: \(descriptor.characteristic!.uuid)]: (\(descriptorValue.count)) \(descriptorValue.hexadecimalString())")
-        } else {
-            NSLog("Read value [descriptor: \(descriptor.uuid), characteristic: \(descriptor.characteristic!.uuid)]: \(String(describing: descriptor.value))")
-        }
-        
-        if readDescriptorCallbacks[key] != nil {
-            // The most future proof way of doing this that I could find, other option would be running strcmp on CBUUID strings
-            // https://developer.apple.com/documentation/corebluetooth/cbuuid/characteristic_descriptors
-            if let descriptorValue = descriptor.value as? Data {
-                if (BleManager.verboseLogging) {
-                    NSLog("Descriptor value is Data")
-                }
-                invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [NSNull(), descriptorValue.toArray()])
-            } else if let descriptorValue = descriptor.value as? NSNumber {
-                if (BleManager.verboseLogging) {
-                    NSLog("Descriptor value is NSNumber")
-                }
-                var value = descriptorValue.uint64Value
-                let byteData = Data(bytes: &value, count: MemoryLayout.size(ofValue: value))
-                invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [NSNull(), byteData.toArray()])
-            } else if let descriptorValue = descriptor.value as? String {
-                if (BleManager.verboseLogging) {
-                    NSLog("Descriptor value is String")
-                }
-                if let byteData = descriptorValue.data(using: .utf8) {
-                    invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [NSNull(), byteData.toArray()])
-                }
-            } else {
-                NSLog("Unrecognized type of descriptor: (UUID: \(descriptor.uuid), value type: \(type(of: descriptor.value)), value: \(String(describing: descriptor.value)))")
-                if let descriptorValue = descriptor.value as? Data {
-                    invokeAndClearDictionary(&readDescriptorCallbacks, withKey: key, usingParameters: [NSNull(), descriptorValue.toArray()])
-                }
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didUpdateValueFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        let key = Helper.key(forPeripheral: peripheral, andCharacteristic: characteristic)
-        
-        if let error = error {
-            NSLog("Error \(characteristic.uuid) :\(error)")
-            invokeAndClearDictionary(&readCallbacks, withKey: key, usingParameters: [error.localizedDescription, NSNull()])
-            return
-        }
-        
-        if BleManager.verboseLogging, let value = characteristic.value {
-            NSLog("Read value [\(characteristic.uuid)]: \( value.hexadecimalString())")
-        }
-        
-        serialQueue.sync {
-            if readCallbacks[key] != nil {
-                invokeAndClearDictionary_THREAD_UNSAFE(&readCallbacks, withKey: key, usingParameters: [NSNull(), characteristic.value!.toArray()])
-            } else {
-                if hasListeners {
-                    sendEvent(withName: "BleManagerDidUpdateValueForCharacteristic", body: [
-                        "peripheral": peripheral.uuidAsString(),
-                        "characteristic": characteristic.uuid.uuidString.lowercased(),
-                        "service": characteristic.service!.uuid.uuidString.lowercased(),
-                        "value": characteristic.value!.toArray()
-                    ])
-                }
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didUpdateNotificationStateFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        if let error = error {
-            NSLog("Error in didUpdateNotificationStateForCharacteristic: \(error)")
-            
-            if hasListeners {
-                sendEvent(withName: "BleManagerDidUpdateNotificationStateFor", body: [
-                    "peripheral": peripheral.uuidAsString(),
-                    "characteristic": characteristic.uuid.uuidString.lowercased(),
-                    "isNotifying": false,
-                    "domain": error._domain,
-                    "code": error._code
-                ])
-            }
-        } else {
-            if hasListeners {
-                sendEvent(withName: "BleManagerDidUpdateNotificationStateFor", body: [
-                    "peripheral": peripheral.uuidAsString(),
-                    "characteristic": characteristic.uuid.uuidString.lowercased(),
-                    "isNotifying": characteristic.isNotifying
-                ])
-            }
-        }
-        
-        let key = Helper.key(forPeripheral: peripheral, andCharacteristic: characteristic)
-        
-        if let error = error {
-            if notificationCallbacks[key] != nil {
-                invokeAndClearDictionary(&notificationCallbacks, withKey: key, usingParameters: [error])
-            }
-            if stopNotificationCallbacks[key] != nil {
-                invokeAndClearDictionary(&stopNotificationCallbacks, withKey: key, usingParameters: [error])
-            }
-        } else {
-            if characteristic.isNotifying {
-                if BleManager.verboseLogging {
-                    NSLog("Notification began on \(characteristic.uuid)")
-                }
-                if notificationCallbacks[key] != nil {
-                    invokeAndClearDictionary(&notificationCallbacks, withKey: key, usingParameters: [])
-                }
-            } else {
-                // Notification has stopped
-                if BleManager.verboseLogging {
-                    NSLog("Notification ended on \(characteristic.uuid)")
-                }
-                if stopNotificationCallbacks[key] != nil {
-                    invokeAndClearDictionary(&stopNotificationCallbacks, withKey: key, usingParameters: [])
-                }
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didWriteValueFor descriptor: CBDescriptor,
-                    error: Error?) {
-        NSLog("didWrite descriptor")
-        
-        let key = Helper.key(forPeripheral: peripheral, andCharacteristic: descriptor.characteristic!, andDescriptor: descriptor)
-        let callbacks = writeDescriptorCallbacks[key]
-        if callbacks != nil {
-            if let error = error {
-                NSLog("\(error)")
-                invokeAndClearDictionary(&writeDescriptorCallbacks, withKey: key, usingParameters: [error.localizedDescription])
-            } else {
-                invokeAndClearDictionary(&writeDescriptorCallbacks, withKey: key, usingParameters: [])
-            }
-        }
-    }
-    
-    func peripheral(_ peripheral: CBPeripheral,
-                    didWriteValueFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        NSLog("didWrite")
-        
-        let key = Helper.key(forPeripheral:peripheral, andCharacteristic: characteristic)
-        let peripheralWriteCallbacks = writeCallbacks[key]
-        
-        if peripheralWriteCallbacks != nil {
-            if let error = error {
-                NSLog("\(error)")
-                invokeAndClearDictionary(&writeCallbacks, withKey: key, usingParameters: [error.localizedDescription])
-            } else {
-                if writeQueue.isEmpty {
-                    invokeAndClearDictionary(&writeCallbacks, withKey: key, usingParameters: [])
-                } else {
-                    let message = writeQueue.removeFirst() as! Data
-                    NSLog("Message to write \(message.hexadecimalString())")
-                    peripheral.writeValue(message, for: characteristic, type: .withResponse)
-                }
-            }
-        }
-    }
-    
     
     @objc static func getCentralManager() -> CBCentralManager? {
         return sharedManager
@@ -1226,7 +631,7 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegat
     }
     
     @objc func requestMTU(_ peripheralUUID: String,
-                          mtu: Int,
+                          options: NSDictionary,
                           callback: @escaping RCTResponseSenderBlock) {
         callback(["Not supported"])
     }

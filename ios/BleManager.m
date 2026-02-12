@@ -23,13 +23,13 @@ RCT_EXTERN_METHOD(connect:
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(disconnect:
-                  (NSString *)peripheralUUID 
-                  force:(BOOL)force
+                  (NSString *)peripheralUUID
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(retrieveServices:
                   (NSString *)peripheralUUID
-                  services:(NSArray<NSString *> *)services
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(readRSSI:
@@ -59,36 +59,26 @@ RCT_EXTERN_METHOD(checkState:
 
 RCT_EXTERN_METHOD(write:
                   (NSString *)peripheralUUID
-                  serviceUUID:(NSString*)serviceUUID
-                  characteristicUUID:(NSString*)characteristicUUID
-                  message:(NSArray*)message
-                  maxByteSize:(NSInteger)maxByteSize
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(writeWithoutResponse:
                   (NSString *)peripheralUUID
-                  serviceUUID:(NSString*)serviceUUID
-                  characteristicUUID:(NSString*)characteristicUUID
-                  message:(NSArray*)message
-                  maxByteSize:(NSInteger)maxByteSize
-                  queueSleepTime:(NSInteger)queueSleepTime
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(read:(NSString *)peripheralUUID
-                  serviceUUID:(NSString*)serviceUUID
-                  characteristicUUID:(NSString*)characteristicUUID
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(startNotification:
                   (NSString *)peripheralUUID
-                  serviceUUID:(NSString*)serviceUUID
-                  characteristicUUID:(NSString*)characteristicUUID
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(stopNotification:
                   (NSString *)peripheralUUID
-                  serviceUUID:(NSString*)serviceUUID
-                  characteristicUUID:(NSString*)characteristicUUID
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(getConnectedPeripherals:(NSArray *)serviceUUIDStrings
@@ -126,7 +116,7 @@ RCT_EXTERN_METHOD(removePeripheral:(NSString *)peripheralUUID
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(requestMTU:(NSString *)peripheralUUID
-                  mtu:(NSInteger)mtu
+                  options:(NSDictionary *)options
                   callback:(nonnull RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(requestConnectionPriority:(NSString *)peripheralUUID

@@ -324,8 +324,6 @@ export enum BleEventType {
    */
   BleManagerDidUpdateNotificationStateFor = "BleManagerDidUpdateNotificationStateFor",
   /**
-   * [Android only]
-   *
    * Emitted when a GATT operation fails with an authentication or encryption
    * error, which typically indicates stale bond keys (e.g. the peripheral
    * removed its bonding info).
@@ -435,8 +433,6 @@ export interface BleManagerCentralManagerWillRestoreState {
 }
 
 /**
- * [Android only]
- *
  * Emitted when a GATT operation fails with an authentication or encryption
  * error, which typically indicates stale bond keys.
  */
@@ -446,9 +442,16 @@ export interface BleManagerAuthorizationErrorEvent {
    */
   readonly peripheral: string;
   /**
-   * GATT status code (5 = INSUFFICIENT_AUTHENTICATION, 8 = INSUFFICIENT_AUTHORIZATION, 15 = INSUFFICIENT_ENCRYPTION, 137 = AUTH_FAIL)
+   * ATT error code.
+   *
+   * Android: 5 = INSUFFICIENT_AUTHENTICATION, 8 = INSUFFICIENT_AUTHORIZATION, 15 = INSUFFICIENT_ENCRYPTION, 137 = AUTH_FAIL
+   * iOS: 5 = insufficientAuthentication, 8 = insufficientAuthorization, 14 = peerRemovedPairingInformation, 15 = insufficientEncryption
    */
   readonly status: number;
+  /**
+   * [iOS only] Error description.
+   */
+  readonly error?: string;
 }
 
 /**
