@@ -5,7 +5,6 @@ import CoreBluetooth
 class BleManager: RCTEventEmitter, CBCentralManagerDelegate {
     
     static var shared:BleManager?
-    static var sharedManager:CBCentralManager?
     
     private var hasListeners:Bool = false
     
@@ -91,18 +90,9 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate {
         
         if let restoreIdentifierKey = options["restoreIdentifierKey"] as? String {
             initOptions[CBCentralManagerOptionRestoreIdentifierKey] = restoreIdentifierKey
-            
-            if let sharedManager = BleManager.sharedManager {
-                manager = sharedManager
-                manager?.delegate = self
-            } else {
-                manager = CBCentralManager(delegate: self, queue: queue, options: initOptions)
-                BleManager.sharedManager = manager
-            }
-        } else {
-            manager = CBCentralManager(delegate: self, queue: queue, options: initOptions)
-            BleManager.sharedManager = manager
         }
+
+        manager = CBCentralManager(delegate: self, queue: queue, options: initOptions)
         
         callback([])
     }
@@ -596,10 +586,6 @@ class BleManager: RCTEventEmitter, CBCentralManagerDelegate {
         }
         
         
-    }
-    
-    @objc static func getCentralManager() -> CBCentralManager? {
-        return sharedManager
     }
     
     @objc static func getInstance() -> BleManager? {
