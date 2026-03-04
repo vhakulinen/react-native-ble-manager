@@ -75,7 +75,8 @@ public class CompanionScanner {
 
 
             if (scanCallback != null) {
-                scanCallback.invoke(null, peripheral != null ? peripheral.asWritableMap() : null);
+                String error = peripheral == null ? "failed to get peripheral result" : null;
+                scanCallback.invoke(error, peripheral != null ? peripheral.asWritableMap() : null);
                 scanCallback = null;
             }
             bleManager.sendEvent("BleManagerCompanionPeripheral", peripheral != null ? peripheral.asWritableMap() : null);
