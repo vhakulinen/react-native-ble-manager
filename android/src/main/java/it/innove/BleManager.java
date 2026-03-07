@@ -326,6 +326,11 @@ class BleManager extends ReactContextBaseJavaModule {
     public void connect(String peripheralUUID, ReadableMap options, Callback callback) {
         Log.d(LOG_TAG, "Connect to: " + peripheralUUID);
 
+        if (getBluetoothAdapter() == null || !getBluetoothAdapter().isEnabled()) {
+            callback.invoke("Bluetooth is not enabled");
+            return;
+        }
+
         MyPeripheral peripheral = retrieveOrCreatePeripheral(peripheralUUID);
         if (peripheral == null) {
             callback.invoke("Peripheral not found");
