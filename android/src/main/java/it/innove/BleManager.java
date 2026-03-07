@@ -539,7 +539,8 @@ class BleManager extends ReactContextBaseJavaModule {
         if (!context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
             state = "unsupported";
         } else if (adapter != null) {
-            switch (adapter.getState()) {
+            int adapterState = adapter.getState();
+            switch (adapterState) {
                 case BluetoothAdapter.STATE_ON:
                     state = "on";
                     break;
@@ -548,7 +549,6 @@ class BleManager extends ReactContextBaseJavaModule {
                     break;
                 case BluetoothAdapter.STATE_TURNING_OFF:
                     state = "turning_off";
-                    clearPeripherals();
                     if (scanManager != null) {
                         scanManager.setScanning(false);
                     }
@@ -567,8 +567,14 @@ class BleManager extends ReactContextBaseJavaModule {
         WritableMap map = Arguments.createMap();
         map.putString("state", state);
         Log.d(LOG_TAG, "state:" + state);
+        // Emit state change before clearing peripherals so JS knows
+        // bluetooth is off before disconnect events arrive.
         sendEvent("BleManagerDidUpdateState", map);
         callback.invoke(state);
+
+        if ("turning_off".equals(state)) {
+            clearPeripherals();
+        }
     }
 
     @ReactMethod
@@ -604,7 +610,6 @@ class BleManager extends ReactContextBaseJavaModule {
                         break;
                     case BluetoothAdapter.STATE_TURNING_OFF:
                         stringState = "turning_off";
-                        clearPeripherals();
                         break;
                     case BluetoothAdapter.STATE_ON:
                         stringState = "on";
@@ -621,7 +626,13 @@ class BleManager extends ReactContextBaseJavaModule {
                 WritableMap map = Arguments.createMap();
                 map.putString("state", stringState);
                 Log.d(LOG_TAG, "state: " + stringState);
+                // Emit state change before clearing peripherals so JS knows
+                // bluetooth is off before disconnect events arrive.
                 sendEvent("BleManagerDidUpdateState", map);
+
+                if (state == BluetoothAdapter.STATE_TURNING_OFF) {
+                    clearPeripherals();
+                }
 
             } else if (action.equals(BluetoothDevice.ACTION_BOND_STATE_CHANGED)) {
                 final int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
