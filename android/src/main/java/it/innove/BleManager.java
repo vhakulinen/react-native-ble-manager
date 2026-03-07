@@ -881,6 +881,12 @@ class BleManager extends ReactContextBaseJavaModule {
     public void onCatalystInstanceDestroy() {
         clearPeripherals();
 
+        try {
+            context.unregisterReceiver(mReceiver);
+        } catch (IllegalArgumentException e) {
+            // Not registered, ignore.
+        }
+
         if (scanManager != null) {
             // Stop scan in case one was started to stop events from being emitted after destroy
             scanManager.stopScan(args -> {
