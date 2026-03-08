@@ -80,13 +80,12 @@ export interface ConnectOptions {
    */
   autoconnect?: boolean;
   /**
-   * Timeotu in milliseconds. Defaults to none.
+   * Timeout in milliseconds. Defaults to none.
    *
    * On Android, connection attempts without autoconnect will timeout by the
    * Android's Bluetooth stack (usually after 30s, but this can vary between
    * devices / Android versions).
    */
-  /** Timeout in milliseconds. Defaults to 5000ms. Set to null for no timeout. */
   timeoutMs?: number | null;
 }
 
