@@ -91,7 +91,7 @@ class MyPeripheral (
     }
 
     private val callback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) = isOurGatt(gatt) {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             checkAuthorizationError(status)
             when (val op = currentOperation) {
                 is GattOperation.Connect -> op.completeWith(status) { Unit }
@@ -126,7 +126,7 @@ class MyPeripheral (
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int
-        ) = isOurGatt(gatt) {
+        ) {
             checkAuthorizationError(status)
             val op = currentOperation
             when {
@@ -144,7 +144,7 @@ class MyPeripheral (
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             status: Int
-        ) = isOurGatt(gatt) {
+        ) {
             checkAuthorizationError(status)
             val op = currentOperation
             when {
@@ -155,7 +155,7 @@ class MyPeripheral (
             }
         }
 
-        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) = isOurGatt(gatt) {
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
             checkAuthorizationError(status)
             val op = currentOperation
             if (op is GattOperation.RequestMTU) {
@@ -166,7 +166,7 @@ class MyPeripheral (
             // spurious mtu changed event.
         }
 
-        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) = isOurGatt(gatt) {
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             checkAuthorizationError(status)
             val op = currentOperation
             when (op) {
@@ -185,7 +185,7 @@ class MyPeripheral (
             gatt: BluetoothGatt,
             descriptor: BluetoothGattDescriptor,
             status: Int
-        ) = isOurGatt(gatt) {
+        ) {
             checkAuthorizationError(status)
             val op = currentOperation
             when {
@@ -208,7 +208,7 @@ class MyPeripheral (
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
-        ) = isOurGatt(gatt) {
+        ) {
             emitEvent("BleManagerDidUpdateValueForCharacteristic", Arguments.createMap().apply {
                 putString("peripheral", device.address)
                 putString("characteristic", characteristic.uuid.toString())
@@ -216,22 +216,6 @@ class MyPeripheral (
                 putArray("value", BleManager.bytesToWritableArray(value))
             })
         }
-    }
-
-    /**
-     * Guard to only react on our _current_ gatt instance.
-     *
-     * There is a chance that if we end up closing our gatt instance we might get "stale" gatt
-     * events that we don't want to react to.
-     */
-    private inline fun isOurGatt(gatt: BluetoothGatt, block: () -> Any?) {
-        if (this.gatt !== gatt) {
-            // Use throwable to provide context.
-            Log.w(TAG, "Spurious gatt callback", Throwable())
-            return
-        }
-
-        block()
     }
 
     /**
